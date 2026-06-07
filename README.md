@@ -46,8 +46,6 @@ To communicate with physical routing nodes (such as the ESP32), BlueMesh uses a 
 ## 📁 Repository Structure
 
 ```
-├── android/
-│   └── BlueMeshAdvertiser.kt      # Android implementation snippet for BLE flooding packets
 ├── app/
 │   ├── src/main/java/com/example/bitchat_lite/
 │   │   ├── MainActivity.kt        # Application Entry, Lifecycle Hooks & Edge-to-Edge Setup
@@ -75,8 +73,6 @@ To communicate with physical routing nodes (such as the ESP32), BlueMesh uses a 
 │   └── relay.ino                  # ESP32 flooding mesh relay firmware (Arduino IDE)
 ├── Dummy build/                   # Compiled releases (APKs) directory
 ├── README.md                      # Main developer guide
-├── programming.md                 # Language and compiler guidelines
-├── DexStringExtractor.kt          # Auxiliary Kotlin tool for DEX string parsing
 ├── build.gradle.kts               # Root Gradle project script
 └── settings.gradle.kts            # Project settings
 ```
