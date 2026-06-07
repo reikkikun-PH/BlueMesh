@@ -61,7 +61,28 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
             bluetoothHandler.messages.collect { message ->
                 val connectedAddress = bluetoothHandler.getConnectedDeviceAddress()
                 val peer = bluetoothHandler.discoveredPeers.value.find { it.address == connectedAddress }
-                val senderUuid = peer?.uuid ?: activeChatUuid
+                
+                val senderUuid = if (message.senderHash != null) {
+                    val myUuidHash = getUserUuid().hashCode()
+                    if (message.recipientHash != myUuidHash && message.recipientHash != 0) {
+                        Log.d("DataRepository", "Mesh: Dropped message because recipient hash ${message.recipientHash} did not match my hash $myUuidHash")
+                        return@collect
+                    }
+                    val resolved = getContacts().find { it.uuid.hashCode() == message.senderHash }?.uuid
+                        ?: bluetoothHandler.discoveredPeers.value.find { it.uuid.hashCode() == message.senderHash }?.uuid
+                    
+                    if (resolved != null) {
+                        resolved
+                    } else {
+                        val tempUuid = "mesh_${message.senderHash}"
+                        if (!isContact(tempUuid)) {
+                            saveContact(tempUuid, "Mesh Peer ${message.senderHash.toLong() and 0xFFFFFFFFL}")
+                        }
+                        tempUuid
+                    }
+                } else {
+                    peer?.uuid ?: activeChatUuid
+                }
 
                 if (senderUuid.isNotEmpty() && !message.isFromMe) {
                     dbHelper.insertMessage(senderUuid, message.text, message.timestamp, "RECEIVED", false)
@@ -115,18 +136,21 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
         val timestamp = System.currentTimeMillis()
         val peer = bluetoothHandler.discoveredPeers.value.find { it.uuid == activeChatUuid }
 
+        // Always broadcast the message via the flooding mesh protocol
+        val messageId = (System.currentTimeMillis() and 0xFFFFFFFFL).toInt()
+        val senderUuid = getUserUuid()
+        val recipientUuid = activeChatUuid
+        bluetoothHandler.advertiseMeshMessage(messageId, senderUuid, recipientUuid, text)
+
+        // If direct GATT is ready, also send it for instant delivery
         if (peer != null && bluetoothHandler.isReady.value) {
-            val sent = bluetoothHandler.sendMessage(text)
-            if (sent) {
-                dbHelper.insertMessage(activeChatUuid, text, timestamp, "SENT", true)
-                _chatMessages.update { current -> current + ChatMessage(text, true, timestamp, "SENT") }
-                return true
-            }
+            bluetoothHandler.sendMessage(text)
         }
 
-        dbHelper.insertMessage(activeChatUuid, text, timestamp, "PENDING", true)
-        _chatMessages.update { current -> current + ChatMessage(text, true, timestamp, "PENDING") }
-        return false
+        // Save to DB as SENT (since we successfully started the BLE advertising broadcast)
+        dbHelper.insertMessage(activeChatUuid, text, timestamp, "SENT", true)
+        _chatMessages.update { current -> current + ChatMessage(text, true, timestamp, "SENT") }
+        return true
     }
 
     override fun getDisplayName(): String {

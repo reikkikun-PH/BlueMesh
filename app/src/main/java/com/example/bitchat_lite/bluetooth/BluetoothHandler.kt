@@ -28,6 +28,7 @@ import kotlinx.coroutines.launch
 import net.jpountz.lz4.LZ4Factory
 import java.lang.reflect.Method
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.CancellationException
 
@@ -39,6 +40,9 @@ class BluetoothHandler(private val context: Context) {
         val SERVICE_UUID: UUID = UUID.fromString("b17c8a70-8bde-4d76-bc3e-1b32d2f7881c")
         val MESSAGE_CHARACTERISTIC_UUID: UUID = UUID.fromString("b17c8a71-8bde-4d76-bc3e-1b32d2f7881c")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+        private const val MESH_SERVICE_UUID_STR = "12345678-1234-5678-1234-567890abcdef"
+        private const val MESH_COMPANY_ID = 0xFFFF
+        private const val CACHE_MAX_SIZE = 100
     }
 
     private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
@@ -68,6 +72,10 @@ class BluetoothHandler(private val context: Context) {
     private var lastScanStartTime: Long = 0
     private var discoveryRetryCount = 0
     private var negotiatedMtu = 23
+    
+    private val messageIdCache = java.util.Collections.synchronizedList(mutableListOf<Int>())
+    private var meshAdvertiseJob: Job? = null
+    private var lastDisplayName: String = ""
 
     private val scope = CoroutineScope(Dispatchers.Default)
 
@@ -101,10 +109,53 @@ class BluetoothHandler(private val context: Context) {
         }
     }
 
+    private fun isDuplicateMessage(messageId: Int): Boolean {
+        synchronized(messageIdCache) {
+            if (messageIdCache.contains(messageId)) {
+                return true
+            }
+            if (messageIdCache.size >= CACHE_MAX_SIZE) {
+                messageIdCache.removeAt(0)
+            }
+            messageIdCache.add(messageId)
+            return false
+        }
+    }
+
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
             val scanRecord = result.scanRecord ?: return
+            
+            val serviceUuids = scanRecord.serviceUuids
+            val meshUuid = ParcelUuid(UUID.fromString(MESH_SERVICE_UUID_STR))
+            if (serviceUuids != null && serviceUuids.contains(meshUuid)) {
+                val manufacturerData = scanRecord.getManufacturerSpecificData(MESH_COMPANY_ID)
+                if (manufacturerData != null && manufacturerData.size >= 12) {
+                    val buffer = ByteBuffer.wrap(manufacturerData)
+                    buffer.order(ByteOrder.BIG_ENDIAN)
+                    val messageId = buffer.int
+                    val senderHash = buffer.int
+                    val recipientHash = buffer.int
+                    
+                    val textBytes = manufacturerData.copyOfRange(12, manufacturerData.size)
+                    val messageText = String(textBytes, Charsets.UTF_8)
+                    
+                    if (!isDuplicateMessage(messageId)) {
+                        Log.i(TAG, "onScanResult (Mesh): Captured new message ID $messageId: $messageText")
+                        _messages.tryEmit(
+                            ChatMessage(
+                                text = messageText,
+                                isFromMe = false,
+                                timestamp = System.currentTimeMillis(),
+                                senderHash = senderHash,
+                                recipientHash = recipientHash
+                            )
+                        )
+                    }
+                }
+                return
+            }
             
             val manufacturerData = scanRecord.getManufacturerSpecificData(SupportMenu.USER_MASK)
             if (manufacturerData != null && manufacturerData.size >= 16) {
@@ -586,7 +637,8 @@ class BluetoothHandler(private val context: Context) {
 
         _discoveredPeers.value = emptyList()
         val filters = listOf(
-            ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build(),
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(UUID.fromString(MESH_SERVICE_UUID_STR))).build()
         )
 
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -633,6 +685,7 @@ class BluetoothHandler(private val context: Context) {
 
     fun startAdvertising(displayName: String) {
         Log.d(TAG, "startAdvertising: Request received for name '$displayName'")
+        lastDisplayName = displayName
         if (!hasPermissions()) {
             Log.e(TAG, "startAdvertising failed: Missing required runtime permissions")
             _isAdvertising.value = false
@@ -730,6 +783,84 @@ class BluetoothHandler(private val context: Context) {
             Log.i(TAG, "stopAdvertising: BLE Advertising stopped successfully")
         } catch (e: Exception) {
             Log.e(TAG, "stopAdvertising: Exception stopping advertising", e)
+        }
+    }
+
+    private val meshAdvertiseCallback = object : AdvertiseCallback() {
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+            Log.i(TAG, "onStartSuccess: BLE mesh advertising started successfully")
+        }
+
+        override fun onStartFailure(errorCode: Int) {
+            Log.e(TAG, "onStartFailure: BLE mesh advertising failed with error code $errorCode")
+        }
+    }
+
+    fun advertiseMeshMessage(messageId: Int, senderUuid: String, recipientUuid: String, messageText: String) {
+        if (!hasPermissions()) {
+            Log.e(TAG, "advertiseMeshMessage: Missing permissions")
+            return
+        }
+        val advertiserObj = advertiser ?: return
+
+        meshAdvertiseJob?.cancel()
+        meshAdvertiseJob = scope.launch {
+            val wasAdvertisingDiscovery = _isAdvertising.value
+            if (wasAdvertisingDiscovery) {
+                Log.d(TAG, "advertiseMeshMessage: Stopping peer discovery advertising temporarily")
+                stopAdvertising()
+                delay(150)
+            }
+
+            val senderHash = senderUuid.hashCode()
+            val recipientHash = recipientUuid.hashCode()
+            val messageBytes = messageText.toByteArray(Charsets.UTF_8)
+            
+            val maxTextBytes = 15
+            val truncatedBytes = if (messageBytes.size > maxTextBytes) messageBytes.copyOfRange(0, maxTextBytes) else messageBytes
+
+            val buffer = ByteBuffer.allocate(12 + truncatedBytes.size)
+            buffer.order(ByteOrder.BIG_ENDIAN)
+            buffer.putInt(messageId)
+            buffer.putInt(senderHash)
+            buffer.putInt(recipientHash)
+            buffer.put(truncatedBytes)
+
+            val manufacturerSpecificData = buffer.array()
+
+            val advertiseData = AdvertiseData.Builder()
+                .addServiceUuid(ParcelUuid(UUID.fromString(MESH_SERVICE_UUID_STR)))
+                .setIncludeDeviceName(false)
+                .setIncludeTxPowerLevel(false)
+                .build()
+
+            val scanResponseData = AdvertiseData.Builder()
+                .addManufacturerData(MESH_COMPANY_ID, manufacturerSpecificData)
+                .build()
+
+            val settings = AdvertiseSettings.Builder()
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                .setConnectable(false)
+                .build()
+
+            try {
+                Log.i(TAG, "advertiseMeshMessage: Starting BLE broadcast for 4 seconds. ID=$messageId, Text=$messageText")
+                advertiserObj.startAdvertising(settings, advertiseData, scanResponseData, meshAdvertiseCallback)
+                
+                delay(4000) // 4 seconds blast window
+                
+                advertiserObj.stopAdvertising(meshAdvertiseCallback)
+                Log.i(TAG, "advertiseMeshMessage: Stopped BLE broadcast")
+            } catch (e: Exception) {
+                Log.e(TAG, "advertiseMeshMessage: Error starting BLE advertising", e)
+            }
+
+            if (wasAdvertisingDiscovery && lastDisplayName.isNotEmpty()) {
+                Log.d(TAG, "advertiseMeshMessage: Restarting peer discovery advertising")
+                delay(150)
+                startAdvertising(lastDisplayName)
+            }
         }
     }
 

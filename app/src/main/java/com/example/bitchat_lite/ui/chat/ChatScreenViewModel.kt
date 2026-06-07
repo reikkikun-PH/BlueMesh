@@ -17,6 +17,7 @@ class ChatScreenViewModel(
 
     fun connect() {
         dataRepository.connectToPeerByUuid(peerUuid)
+        dataRepository.startScan()
     }
 
     fun disconnect() {
@@ -31,5 +32,6 @@ class ChatScreenViewModel(
     override fun onCleared() {
         super.onCleared()
         disconnect()
+        dataRepository.stopScan()
     }
 }

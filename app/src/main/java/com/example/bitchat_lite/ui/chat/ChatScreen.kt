@@ -161,9 +161,9 @@ fun ChatScreen(
                             }
                         }
                     },
-                    enabled = textInput.isNotBlank() && isReady,
+                    enabled = textInput.isNotBlank(),
                     colors = IconButtonDefaults.iconButtonColors(
-                        containerColor = if (textInput.isNotBlank() && isReady) Color(0xFF3B82F6) else Color(0xFF1D263B),
+                        containerColor = if (textInput.isNotBlank()) Color(0xFF3B82F6) else Color(0xFF1D263B),
                         contentColor = Color.White,
                         disabledContainerColor = Color(0xFF1D263B),
                         disabledContentColor = Color(0xFF475569)
