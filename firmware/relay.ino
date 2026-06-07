@@ -37,6 +37,10 @@ bool isDuplicate(uint32_t messageId) {
     return false;
 }
 
+// Statistics counters
+uint32_t totalUsersDetected = 0;
+uint32_t totalMessagesRelayed = 0;
+
 // BLE Scan Callback
 class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
@@ -63,15 +67,21 @@ class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
                             displayName = mData.substr(19);
                         }
                         
-                        Serial.printf("[Relay] Detected user: Name='%s', Passcode=%s, UUID=%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x, RSSI=%d dBm\n",
-                                      displayName.c_str(),
-                                      (passcodeFlag == 1) ? "Enabled" : "Disabled",
+                        totalUsersDetected++;
+                        Serial.println("\n┌────────────────────────────────────────────────────────┐");
+                        Serial.printf("│ 👤 [USER DETECTED]                                     │\n");
+                        Serial.println("├────────────────────────────────────────────────────────┤");
+                        Serial.printf("│ Display Name:  %-40s │\n", displayName.c_str());
+                        Serial.printf("│ Passcode PIN:  %-40s │\n", (passcodeFlag == 1) ? "Locked (Required)" : "None (Disposable)");
+                        Serial.printf("│ UUID:          %02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x │\n",
                                       uuid[0], uuid[1], uuid[2], uuid[3],
                                       uuid[4], uuid[5],
                                       uuid[6], uuid[7],
                                       uuid[8], uuid[9],
-                                      uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15],
-                                      advertisedDevice.getRSSI());
+                                      uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]);
+                        Serial.printf("│ RSSI Strength: %-5d dBm                                │\n", advertisedDevice.getRSSI());
+                        Serial.printf("│ Total Seen:    %-5u                                    │\n", totalUsersDetected);
+                        Serial.println("└────────────────────────────────────────────────────────┘\n");
                     }
                 } else {
                     // Mesh Message
@@ -103,11 +113,19 @@ class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
                             msgText = mData.substr(14);
                         }
 
-                        Serial.printf("[Relay] Detected message: ID=%u, SenderHash=%08X, RecipientHash=%08X, Content='%s', RSSI=%d dBm\n",
-                                      msgId, senderHash, recipientHash, msgText.c_str(), advertisedDevice.getRSSI());
-
                         if (!isDuplicate(msgId)) {
-                            Serial.printf("[Relay] New unique message captured! Relaying...\n");
+                            totalMessagesRelayed++;
+                            Serial.println("\n┌────────────────────────────────────────────────────────┐");
+                            Serial.printf("│ 📶 [RELAYING STORE-AND-FORWARD MESSAGE]                │\n");
+                            Serial.println("├────────────────────────────────────────────────────────┤");
+                            Serial.printf("│ Message ID:    %-40u │\n", msgId);
+                            Serial.printf("│ Sender Hash:   %08X                                 │\n", senderHash);
+                            Serial.printf("│ Recipient Hash:%08X                                 │\n", recipientHash);
+                            Serial.printf("│ Content:       \"%-38s\" │\n", msgText.c_str());
+                            Serial.printf("│ RSSI Strength: %-5d dBm                                │\n", advertisedDevice.getRSSI());
+                            Serial.printf("│ Relay Action:  Broadcasting for 4s at +9dBm            │\n");
+                            Serial.printf("│ Total Relayed: %-5u                                    │\n", totalMessagesRelayed);
+                            Serial.println("└────────────────────────────────────────────────────────┘\n");
                             
                             // Capture payload and flag transition
                             payloadToAdvertise = mData;
@@ -116,7 +134,7 @@ class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
                             // Stop scanning immediately to free the RF hardware
                             BLEDevice::getScan()->stop();
                         } else {
-                            Serial.printf("[Relay] Message ID=%u is a duplicate, skipping relay.\n", msgId);
+                            Serial.printf("[Relay] Intercepted message ID=%u (Duplicate, ignored)\n", msgId);
                         }
                     }
                 }
@@ -154,6 +172,8 @@ void setup() {
 void loop() {
     // If no new payload has been detected, run a scan cycle
     if (!newPayloadAvailable) {
+        Serial.println("[Relay] Scanning for BlueMesh signals (Users / Messages)...");
+
         // Scan for 5 seconds. If a new payload is found, onResult() calls stop() 
         // which makes start() return immediately.
         pBLEScan->start(5, false);
