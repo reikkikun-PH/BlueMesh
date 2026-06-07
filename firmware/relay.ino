@@ -11,6 +11,9 @@
 // Define the Service UUID to filter and transmit on
 #define SERVICE_UUID "12345678-1234-5678-1234-567890abcdef"
 
+// Onboard LED pin (GPIO 2 on standard NodeMCU-32S dev kits)
+#define STATUS_LED 2
+
 // Sliding window cache configuration
 const size_t CACHE_MAX_SIZE = 50;
 std::vector<uint32_t> messageCache;
@@ -72,6 +75,14 @@ class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
                                       uuid[8], uuid[9],
                                       uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15],
                                       advertisedDevice.getRSSI());
+
+                        // Quick double blink on user detection
+                        for (int i = 0; i < 2; i++) {
+                            digitalWrite(STATUS_LED, HIGH);
+                            delay(50);
+                            digitalWrite(STATUS_LED, LOW);
+                            delay(50);
+                        }
                     }
                 } else {
                     // Mesh Message
@@ -106,6 +117,11 @@ class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
                         Serial.printf("[Relay] Detected message: ID=%u, SenderHash=%08X, RecipientHash=%08X, Content='%s', RSSI=%d dBm\n",
                                       msgId, senderHash, recipientHash, msgText.c_str(), advertisedDevice.getRSSI());
 
+                        // Single quick blink on message detection
+                        digitalWrite(STATUS_LED, HIGH);
+                        delay(50);
+                        digitalWrite(STATUS_LED, LOW);
+
                         if (!isDuplicate(msgId)) {
                             Serial.printf("[Relay] New unique message captured! Relaying...\n");
                             
@@ -129,6 +145,10 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     Serial.println("[Relay] Initializing BlueMesh ESP32 Infrastructure Relay...");
+
+    // Initialize status LED pin
+    pinMode(STATUS_LED, OUTPUT);
+    digitalWrite(STATUS_LED, LOW);
 
     // Initialize BLE stack
     BLEDevice::init("BlueMesh-Relay");
@@ -154,6 +174,11 @@ void setup() {
 void loop() {
     // If no new payload has been detected, run a scan cycle
     if (!newPayloadAvailable) {
+        // Flash the LED briefly to show scan heartbeat/activity
+        digitalWrite(STATUS_LED, HIGH);
+        delay(30);
+        digitalWrite(STATUS_LED, LOW);
+
         // Scan for 5 seconds. If a new payload is found, onResult() calls stop() 
         // which makes start() return immediately.
         pBLEScan->start(5, false);
@@ -179,6 +204,9 @@ void loop() {
         }
         Serial.printf("[Relay] Broadcasting relayed message ID=%u at +9dBm for 4 seconds...\n", msgId);
 
+        // Turn LED solid ON during active relay broadcast
+        digitalWrite(STATUS_LED, HIGH);
+
         // Construct Advertisement Data
         BLEAdvertisementData oAdvertisementData;
         // Flags: General Discoverable, BR/EDR Not Supported
@@ -201,6 +229,10 @@ void loop() {
 
         // Stop advertising
         pAdvertising->stop();
+
+        // Turn LED OFF after broadcast finishes
+        digitalWrite(STATUS_LED, LOW);
+
         Serial.println("[Relay] Broadcast finished. Re-entering Scanning Mode...");
 
         // Reset state variables
