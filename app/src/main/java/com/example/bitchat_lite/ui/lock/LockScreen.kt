@@ -55,13 +55,13 @@ fun LockScreen(
     }
 
     val subtitleText = when (mode) {
-        "unlock" -> "Enter your 4-to-6 digit passcode to unlock BlueMesh"
-        "setup" -> if (setupStage == 1) "Enter a 4-to-6 digit security PIN" else "Re-enter your new PIN to confirm"
+        "unlock" -> "Enter your 4-digit passcode to unlock BlueMesh"
+        "setup" -> if (setupStage == 1) "Enter a 4-digit security PIN" else "Re-enter your new PIN to confirm"
         else -> ""
     }
 
     val onDigitClick: (String) -> Unit = { digit ->
-        if (pinInput.length < 6) {
+        if (pinInput.length < 4) {
             pinInput += digit
             errorMessage = ""
         }
@@ -75,7 +75,7 @@ fun LockScreen(
     }
 
     val onSubmitClick: () -> Unit = {
-        if (pinInput.length >= 4) {
+        if (pinInput.length == 4) {
             when (mode) {
                 "unlock", "verify", "verify_change" -> {
                     if (repository.verifyPasscode(pinInput)) {
@@ -105,7 +105,7 @@ fun LockScreen(
                 }
             }
         } else {
-            errorMessage = "Passcode must be at least 4 digits"
+            errorMessage = "Passcode must be exactly 4 digits"
         }
     }
 
@@ -192,7 +192,7 @@ fun LockScreen(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    for (i in 0 until 6) {
+                    for (i in 0 until 4) {
                         val active = i < pinInput.length
                         Box(
                             modifier = Modifier
