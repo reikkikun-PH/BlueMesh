@@ -194,7 +194,8 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                 name = name,
                 device = discoveredPeer?.device,
                 lastSeen = discoveredPeer?.lastSeen ?: 0L,
-                uuid = uuid
+                uuid = uuid,
+                hasPasscode = discoveredPeer?.hasPasscode ?: false
             )
         }
     }

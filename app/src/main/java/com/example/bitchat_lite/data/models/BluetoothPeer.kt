@@ -7,5 +7,6 @@ data class BluetoothPeer(
     val name: String,
     val device: BluetoothDevice?,
     val lastSeen: Long = System.currentTimeMillis(),
-    val uuid: String = ""
+    val uuid: String = "",
+    val hasPasscode: Boolean = false
 )

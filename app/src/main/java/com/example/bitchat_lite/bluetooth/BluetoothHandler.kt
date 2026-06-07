@@ -160,8 +160,10 @@ class BluetoothHandler(private val context: Context) {
             val manufacturerData = scanRecord.getManufacturerSpecificData(SupportMenu.USER_MASK)
             if (manufacturerData != null && manufacturerData.size >= 16) {
                 val peerUuid = bytesToUuid(manufacturerData.copyOfRange(0, 16)).toString()
-                val displayName = String(manufacturerData, 16, manufacturerData.size - 16, Charsets.UTF_8).trim()
-                Log.d(TAG, "onScanResult: Parsed BlueMesh display name '$displayName' and UUID '$peerUuid' for ${device.address}")
+                val hasPasscode = if (manufacturerData.size >= 17) manufacturerData[16] == 1.toByte() else false
+                val nameOffset = if (manufacturerData.size >= 17) 17 else 16
+                val displayName = String(manufacturerData, nameOffset, manufacturerData.size - nameOffset, Charsets.UTF_8).trim()
+                Log.d(TAG, "onScanResult: Parsed BlueMesh display name '$displayName', hasPasscode=$hasPasscode, and UUID '$peerUuid' for ${device.address}")
                 
                 if (displayName.isNotEmpty()) {
                     val now = System.currentTimeMillis()
@@ -170,7 +172,8 @@ class BluetoothHandler(private val context: Context) {
                         name = displayName,
                         device = device,
                         lastSeen = now,
-                        uuid = peerUuid
+                        uuid = peerUuid,
+                        hasPasscode = hasPasscode
                     )
                     _discoveredPeers.update { current ->
                         val filtered = current.filterNot { it.address == peer.address || it.uuid == peer.uuid }
@@ -745,13 +748,17 @@ class BluetoothHandler(private val context: Context) {
 
             val truncatedName = if (displayName.length > 10) displayName.substring(0, 10) else displayName
             var nameBytes = truncatedName.toByteArray(Charsets.UTF_8)
-            if (nameBytes.size > 11) {
-                nameBytes = nameBytes.copyOfRange(0, 11)
+            if (nameBytes.size > 10) {
+                nameBytes = nameBytes.copyOfRange(0, 10)
             }
 
-            val manufacturerData = ByteArray(16 + nameBytes.size)
+            val isPasscode = prefs.getBoolean("is_passcode_enabled", false)
+            val passcodeFlag = if (isPasscode) 1.toByte() else 0.toByte()
+
+            val manufacturerData = ByteArray(17 + nameBytes.size)
             System.arraycopy(uuidBytes, 0, manufacturerData, 0, 16)
-            System.arraycopy(nameBytes, 0, manufacturerData, 16, nameBytes.size)
+            manufacturerData[16] = passcodeFlag
+            System.arraycopy(nameBytes, 0, manufacturerData, 17, nameBytes.size)
 
             val data = AdvertiseData.Builder()
                 .addServiceUuid(ParcelUuid(SERVICE_UUID))
