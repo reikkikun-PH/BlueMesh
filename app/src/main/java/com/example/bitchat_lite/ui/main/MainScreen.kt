@@ -55,6 +55,10 @@ fun MainScreen(
 
     DisposableEffect(Unit) {
         viewModel.startScanning()
+        val name = viewModel.displayName
+        if (name.isNotEmpty()) {
+            viewModel.toggleDiscoverability(true)
+        }
         onDispose {
             viewModel.stopScanning()
         }
@@ -373,7 +377,7 @@ fun PeerItem(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (!isContact) {
+                if (isPasscodeEnabled && !isContact) {
                     IconButton(
                         onClick = onSaveClick,
                         colors = IconButtonDefaults.iconButtonColors(contentColor = Color(0xFF10B981))

@@ -46,8 +46,14 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
     override val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
 
     init {
-        val uuidStr = prefs.getString("user_uuid", "") ?: ""
-        if (uuidStr.isEmpty()) {
+        val isPasscode = isPasscodeEnabled()
+        if (isPasscode) {
+            val uuidStr = prefs.getString("user_uuid", "") ?: ""
+            if (uuidStr.isEmpty()) {
+                prefs.edit().putString("user_uuid", UUID.randomUUID().toString()).apply()
+            }
+        } else {
+            // Non-password user: generate a new temporary random UUID on every launch (disposable ID)
             prefs.edit().putString("user_uuid", UUID.randomUUID().toString()).apply()
         }
 
@@ -75,8 +81,10 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                         resolved
                     } else {
                         val tempUuid = "mesh_${message.senderHash}"
-                        if (!isContact(tempUuid)) {
-                            saveContact(tempUuid, "Mesh Peer ${message.senderHash.toLong() and 0xFFFFFFFFL}")
+                        if (isPasscodeEnabled()) {
+                            if (!isContact(tempUuid)) {
+                                saveContact(tempUuid, "Mesh Peer ${message.senderHash.toLong() and 0xFFFFFFFFL}")
+                            }
                         }
                         tempUuid
                     }
@@ -84,7 +92,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                     peer?.uuid ?: activeChatUuid
                 }
 
-                if (senderUuid.isNotEmpty() && !message.isFromMe) {
+                if (isPasscodeEnabled() && senderUuid.isNotEmpty() && !message.isFromMe) {
                     dbHelper.insertMessage(senderUuid, message.text, message.timestamp, "RECEIVED", false)
                 }
 
@@ -97,7 +105,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
         scope.launch {
             bluetoothHandler.connectionStatus.collect { status ->
                 if (status == ConnectionStatus.DISCONNECTED) {
-                    if (activeChatUuid.isNotEmpty()) {
+                    if (activeChatUuid.isNotEmpty() && isPasscodeEnabled()) {
                         _chatMessages.value = dbHelper.getMessagesForContact(activeChatUuid)
                     } else {
                         _chatMessages.value = emptyList()
@@ -147,8 +155,10 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
             bluetoothHandler.sendMessage(text)
         }
 
-        // Save to DB as SENT (since we successfully started the BLE advertising broadcast)
-        dbHelper.insertMessage(activeChatUuid, text, timestamp, "SENT", true)
+        // Save to DB as SENT only if passcode is enabled
+        if (isPasscodeEnabled()) {
+            dbHelper.insertMessage(activeChatUuid, text, timestamp, "SENT", true)
+        }
         _chatMessages.update { current -> current + ChatMessage(text, true, timestamp, "SENT") }
         return true
     }
@@ -174,7 +184,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
     }
 
     override fun getContacts(): List<BluetoothPeer> {
-        val list = dbHelper.getContactsList()
+        val list = if (isPasscodeEnabled()) dbHelper.getContactsList() else emptyList()
         val currentDiscovered = bluetoothHandler.discoveredPeers.value
         return list.map { (uuid, name) ->
             val discoveredPeer = currentDiscovered.find { it.uuid == uuid }
@@ -203,7 +213,11 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
 
     override fun setActiveChat(uuid: String) {
         activeChatUuid = uuid
-        _chatMessages.value = dbHelper.getMessagesForContact(uuid)
+        _chatMessages.value = if (isPasscodeEnabled()) {
+            dbHelper.getMessagesForContact(uuid)
+        } else {
+            emptyList()
+        }
     }
 
     override fun connectToPeerByUuid(uuid: String) {
