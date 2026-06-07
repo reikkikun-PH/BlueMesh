@@ -143,6 +143,22 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                 }
             }
         }
+
+        scope.launch {
+            discoveredPeers.collect { peers ->
+                if (isPasscodeEnabled()) {
+                    for (peer in peers) {
+                        if (isContact(peer.uuid)) {
+                            val storedContact = getContacts().find { it.uuid == peer.uuid }
+                            if (storedContact != null && storedContact.name != peer.name) {
+                                Log.i("DataRepository", "Contact sync: Discovered name update for contact ${peer.uuid}: '${storedContact.name}' -> '${peer.name}'")
+                                saveContact(peer.uuid, peer.name)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     override fun startScan() {
@@ -199,6 +215,10 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
 
     override fun saveDisplayName(name: String) {
         prefs.edit().putString("display_name", name).apply()
+        if (isAdvertising.value) {
+            bluetoothHandler.stopAdvertising()
+            bluetoothHandler.startAdvertising(name)
+        }
     }
 
     override fun clearChatHistory() {

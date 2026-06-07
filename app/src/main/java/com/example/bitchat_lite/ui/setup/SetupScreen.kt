@@ -23,6 +23,7 @@ fun SetupScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val repository = remember { com.example.bitchat_lite.data.DefaultDataRepository.getInstance(context.applicationContext) }
     val prefs = remember { context.getSharedPreferences("bluemesh_prefs", Context.MODE_PRIVATE) }
     var nameInput by remember { mutableStateOf(prefs.getString("display_name", "") ?: "") }
     var showError by remember { mutableStateOf(false) }
@@ -115,7 +116,7 @@ fun SetupScreen(
                 onClick = {
                     val trimmed = nameInput.trim()
                     if (trimmed.isNotBlank()) {
-                        prefs.edit().putString("display_name", trimmed).apply()
+                        repository.saveDisplayName(trimmed)
                         onSetupComplete()
                     } else {
                         showError = true
