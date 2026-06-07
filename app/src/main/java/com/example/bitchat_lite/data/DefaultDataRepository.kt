@@ -36,6 +36,29 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
     private val dbHelper = OfflineQueueDbHelper(context)
     private var activeChatUuid: String = ""
 
+    private data class ProcessedMessageEntry(
+        val senderUuid: String,
+        val text: String,
+        val timestamp: Long
+    )
+    private val processedMessagesCache = java.util.Collections.synchronizedList(mutableListOf<ProcessedMessageEntry>())
+    private val PROCESSED_CACHE_MAX_SIZE = 50
+
+    private fun isDuplicateMessageContent(senderUuid: String, text: String): Boolean {
+        val now = System.currentTimeMillis()
+        synchronized(processedMessagesCache) {
+            processedMessagesCache.removeAll { now - it.timestamp > 8000 }
+            if (processedMessagesCache.any { it.senderUuid == senderUuid && it.text == text }) {
+                return true
+            }
+            processedMessagesCache.add(ProcessedMessageEntry(senderUuid, text, now))
+            if (processedMessagesCache.size > PROCESSED_CACHE_MAX_SIZE) {
+                processedMessagesCache.removeAt(0)
+            }
+            return false
+        }
+    }
+
     override val discoveredPeers: StateFlow<List<BluetoothPeer>> = bluetoothHandler.discoveredPeers
     override val connectionStatus: StateFlow<ConnectionStatus> = bluetoothHandler.connectionStatus
     override val isReady: StateFlow<Boolean> = bluetoothHandler.isReady
@@ -90,6 +113,13 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                     }
                 } else {
                     peer?.uuid ?: activeChatUuid
+                }
+
+                if (senderUuid.isNotEmpty() && !message.isFromMe) {
+                    if (isDuplicateMessageContent(senderUuid, message.text)) {
+                        Log.d("DataRepository", "Deduplication: Discarded duplicate message: ${message.text}")
+                        return@collect
+                    }
                 }
 
                 if (isPasscodeEnabled() && senderUuid.isNotEmpty() && !message.isFromMe) {
@@ -261,10 +291,18 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
 
     override fun savePasscode(pin: String) {
         val hash = hashPin(pin)
+        val newLockedUuid = UUID.randomUUID().toString()
         prefs.edit()
             .putString("passcode_hash", hash)
             .putBoolean("is_passcode_enabled", true)
+            .putString("user_uuid", newLockedUuid)
             .apply()
+            
+        val name = getDisplayName()
+        if (name.isNotEmpty()) {
+            bluetoothHandler.stopAdvertising()
+            bluetoothHandler.startAdvertising(name)
+        }
     }
 
     override fun verifyPasscode(pin: String): Boolean {
@@ -277,7 +315,14 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
         prefs.edit()
             .remove("passcode_hash")
             .putBoolean("is_passcode_enabled", false)
+            .putString("user_uuid", UUID.randomUUID().toString())
             .apply()
+            
+        val name = getDisplayName()
+        if (name.isNotEmpty()) {
+            bluetoothHandler.stopAdvertising()
+            bluetoothHandler.startAdvertising(name)
+        }
     }
 
     private fun hashPin(pin: String): String {
