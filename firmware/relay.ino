@@ -51,29 +51,73 @@ class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
                 String mDataString = advertisedDevice.getManufacturerData();
                 std::string mData(mDataString.c_str(), mDataString.length());
                 
-                // Expected format: 2 bytes Company ID + 4 bytes Message ID + message body
-                // Minimum size is 6 bytes (2 + 4)
-                if (mData.length() >= 6) {
-                    // Extract Message ID (Big Endian)
-                    uint32_t msgId = 0;
-                    msgId |= (uint8_t)mData[2] << 24;
-                    msgId |= (uint8_t)mData[3] << 16;
-                    msgId |= (uint8_t)mData[4] << 8;
-                    msgId |= (uint8_t)mData[5];
-
-                    if (!isDuplicate(msgId)) {
-                        Serial.printf("[Relay] New unique message captured! ID: %u, Length: %d bytes\n", msgId, mData.length());
+                // Distinguish between connectable (Peer Discovery) and non-connectable (Mesh Message)
+                if (advertisedDevice.isConnectable()) {
+                    // Peer Discovery (User advertisement)
+                    // Format: 2 bytes Company ID + 16 bytes UUID + 1 byte passcode flag + Name (0-10 bytes)
+                    if (mData.length() >= 19) {
+                        const uint8_t* uuid = (const uint8_t*)&mData[2];
+                        uint8_t passcodeFlag = mData[18];
+                        std::string displayName = "";
+                        if (mData.length() > 19) {
+                            displayName = mData.substr(19);
+                        }
                         
-                        // Extract text for diagnostic logging
-                        std::string msgText = mData.substr(6);
-                        Serial.printf("[Relay] Content: %s\n", msgText.c_str());
+                        Serial.printf("[Relay] Detected user: Name='%s', Passcode=%s, UUID=%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x, RSSI=%d dBm\n",
+                                      displayName.c_str(),
+                                      (passcodeFlag == 1) ? "Enabled" : "Disabled",
+                                      uuid[0], uuid[1], uuid[2], uuid[3],
+                                      uuid[4], uuid[5],
+                                      uuid[6], uuid[7],
+                                      uuid[8], uuid[9],
+                                      uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15],
+                                      advertisedDevice.getRSSI());
+                    }
+                } else {
+                    // Mesh Message
+                    // Format: 2 bytes Company ID + 4 bytes msgId + 4 bytes senderHash + 4 bytes recipientHash + Message Text
+                    if (mData.length() >= 14) {
+                        // Extract Message ID (Big Endian)
+                        uint32_t msgId = 0;
+                        msgId |= (uint8_t)mData[2] << 24;
+                        msgId |= (uint8_t)mData[3] << 16;
+                        msgId |= (uint8_t)mData[4] << 8;
+                        msgId |= (uint8_t)mData[5];
 
-                        // Capture payload and flag transition
-                        payloadToAdvertise = mData;
-                        newPayloadAvailable = true;
+                        // Extract Sender Hash (Big Endian)
+                        uint32_t senderHash = 0;
+                        senderHash |= (uint8_t)mData[6] << 24;
+                        senderHash |= (uint8_t)mData[7] << 16;
+                        senderHash |= (uint8_t)mData[8] << 8;
+                        senderHash |= (uint8_t)mData[9];
 
-                        // Stop scanning immediately to free the RF hardware
-                        BLEDevice::getScan()->stop();
+                        // Extract Recipient Hash (Big Endian)
+                        uint32_t recipientHash = 0;
+                        recipientHash |= (uint8_t)mData[10] << 24;
+                        recipientHash |= (uint8_t)mData[11] << 16;
+                        recipientHash |= (uint8_t)mData[12] << 8;
+                        recipientHash |= (uint8_t)mData[13];
+
+                        std::string msgText = "";
+                        if (mData.length() > 14) {
+                            msgText = mData.substr(14);
+                        }
+
+                        Serial.printf("[Relay] Detected message: ID=%u, SenderHash=%08X, RecipientHash=%08X, Content='%s', RSSI=%d dBm\n",
+                                      msgId, senderHash, recipientHash, msgText.c_str(), advertisedDevice.getRSSI());
+
+                        if (!isDuplicate(msgId)) {
+                            Serial.printf("[Relay] New unique message captured! Relaying...\n");
+                            
+                            // Capture payload and flag transition
+                            payloadToAdvertise = mData;
+                            newPayloadAvailable = true;
+
+                            // Stop scanning immediately to free the RF hardware
+                            BLEDevice::getScan()->stop();
+                        } else {
+                            Serial.printf("[Relay] Message ID=%u is a duplicate, skipping relay.\n", msgId);
+                        }
                     }
                 }
             }
@@ -124,6 +168,16 @@ void loop() {
         advertisingMode = true;
 
         Serial.println("[Relay] Switching to Advertising Mode...");
+
+        // Extract Message ID from payloadToAdvertise
+        uint32_t msgId = 0;
+        if (payloadToAdvertise.length() >= 6) {
+            msgId |= (uint8_t)payloadToAdvertise[2] << 24;
+            msgId |= (uint8_t)payloadToAdvertise[3] << 16;
+            msgId |= (uint8_t)payloadToAdvertise[4] << 8;
+            msgId |= (uint8_t)payloadToAdvertise[5];
+        }
+        Serial.printf("[Relay] Broadcasting relayed message ID=%u at +9dBm for 4 seconds...\n", msgId);
 
         // Construct Advertisement Data
         BLEAdvertisementData oAdvertisementData;
