@@ -48,7 +48,8 @@ class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
         // Filter by Service UUID
         if (advertisedDevice.isAdvertisingService(BLEUUID(SERVICE_UUID))) {
             if (advertisedDevice.haveManufacturerData()) {
-                std::string mData = advertisedDevice.getManufacturerData();
+                String mDataString = advertisedDevice.getManufacturerData();
+                std::string mData(mDataString.c_str(), mDataString.length());
                 
                 // Expected format: 2 bytes Company ID + 4 bytes Message ID + message body
                 // Minimum size is 6 bytes (2 + 4)
@@ -131,7 +132,7 @@ void loop() {
         // Add Service UUID
         oAdvertisementData.setCompleteServices(BLEUUID(SERVICE_UUID));
         // Add exact Manufacturer Data payload (Company ID + Message ID + Message Text)
-        oAdvertisementData.setManufacturerData(payloadToAdvertise);
+        oAdvertisementData.setManufacturerData(String(payloadToAdvertise.data(), payloadToAdvertise.length()));
 
         pAdvertising->setAdvertisementData(oAdvertisementData);
 
