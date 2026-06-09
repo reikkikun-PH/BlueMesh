@@ -177,7 +177,7 @@ class BluetoothHandler(private val context: Context) {
                     )
                     _discoveredPeers.update { current ->
                         val filtered = current.filterNot { it.address == peer.address || it.uuid == peer.uuid }
-                        filtered + peer
+                        (filtered + peer).sortedWith(compareBy({ it.name.lowercase() }, { it.address }))
                     }
                 }
             } else {
@@ -556,6 +556,7 @@ class BluetoothHandler(private val context: Context) {
                 val now = System.currentTimeMillis()
                 _discoveredPeers.update { current ->
                     current.filter { now - it.lastSeen < 8000 }
+                        .sortedWith(compareBy({ it.name.lowercase() }, { it.address }))
                 }
             }
         }
