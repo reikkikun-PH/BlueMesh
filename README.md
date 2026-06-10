@@ -18,6 +18,37 @@ A peer-to-peer, decentralized Bluetooth mesh messaging application for Android. 
 
 ---
 
+## User Guide
+
+Follow these steps to configure and use the BlueMesh application:
+
+### 1. Initial Setup
+1. **Launch the Application**: Upon first launch, the app displays the onboarding screen.
+2. **Configure Your Profile**: Enter your display name. This name is broadcasted to nearby peers during BLE discovery.
+3. **Set Up a Passcode**: Create a secure 4-digit numeric PIN. This passcode is hashed using SHA-256 and stored locally to protect your private local database.
+
+### 2. Scanning and Discoverability
+1. **Enable Bluetooth**: Ensure your device's Bluetooth is turned on. Grant the required runtime Bluetooth permissions (Scan, Connect, and Advertise) when prompted.
+2. **Start Scanning**: On the main dashboard, toggle **Scanning** to look for nearby peers. Discovered peers are displayed stably in alphabetical order.
+3. **Enable Discoverability**: Toggle **Discoverable** to allow other nearby devices running BlueMesh to find you.
+
+### 3. Establishing a Connection
+1. **Select a Peer**: Tap on a peer's name in the discovered list to open the chat screen.
+2. **Connection Status**: The app automatically negotiates a secure GATT connection, optimizes the MTU size for payload transmission, and transitions the status indicator to **Connected**.
+3. **Alt-Tab / Background Handling**: If you minimize or background the application, it pauses BLE operations to conserve power. Re-opening the application automatically resumes scanning and triggers connection recovery to the active peer.
+
+### 4. Messaging and Syncing
+1. **Real-Time Offline Chat**: Send and receive compressed messages in the active chat view without cellular or internet data.
+2. **Offline Queue Sync**: If a peer moves out of range, the connection changes to **Disconnected**. You can still type and queue messages. The app stores them in a local SQLite database.
+3. **Automatic Synchronization**: Once the peer comes back into Bluetooth range, the app automatically reconnects and synchronizes all queued messages.
+
+### 5. Settings and Security
+1. **Settings Drawer**: Access the navigation drawer on the home screen to open the Security panel.
+2. **Change Passcode**: Update your 4-digit PIN lock.
+3. **Auto-Lock**: If the application is backgrounded or left inactive for more than 5 minutes, it automatically locks and requires the passcode to unlock.
+
+---
+
 ## Flooding Mesh Relay Protocol
 
 To communicate with physical routing nodes (such as the ESP32), BlueMesh uses a non-connectable flooding protocol over BLE:
