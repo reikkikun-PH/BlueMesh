@@ -47,7 +47,7 @@ To communicate with physical routing nodes (such as the ESP32), BlueMesh uses a 
 
 ```
 ├── app/
-│   ├── src/main/java/com/example/bitchat_lite/
+│   ├── src/main/java/com/example/bluemesh/
 │   │   ├── MainActivity.kt        # Application Entry, Lifecycle Hooks & Edge-to-Edge Setup
 │   │   ├── Navigation.kt          # Compose Navigation Routes
 │   │   ├── NavigationKeys.kt      # Navigation serializable keys

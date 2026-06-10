@@ -7,10 +7,10 @@ plugins {
 }
 
 android {
-    namespace = "com.example.bitchat_lite"
+    namespace = "com.example.bluemesh"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.example.bitchat_lite"
+        applicationId = "com.example.bluemesh"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
