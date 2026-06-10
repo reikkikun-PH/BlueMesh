@@ -23,6 +23,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.bitchat_lite.data.DefaultDataRepository
 import com.example.bitchat_lite.data.models.ChatMessage
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.example.bitchat_lite.data.models.ConnectionStatus
 
 @Composable
@@ -43,9 +46,29 @@ fun ChatScreen(
     var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    // Trigger connection upon entering the screen
-    LaunchedEffect(Unit) {
-        viewModel.connect()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    if (status != ConnectionStatus.CONNECTED && status != ConnectionStatus.SYNCHRONIZING) {
+                        viewModel.connect()
+                    }
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    viewModel.disconnect()
+                    viewModel.stopScan()
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.disconnect()
+            viewModel.stopScan()
+        }
     }
 
     // Auto-scroll to bottom when new messages arrive

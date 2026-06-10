@@ -24,6 +24,10 @@ class ChatScreenViewModel(
         dataRepository.disconnect()
     }
 
+    fun stopScan() {
+        dataRepository.stopScan()
+    }
+
     fun sendMessage(text: String): Boolean {
         if (text.isBlank()) return false
         return dataRepository.sendMessage(text)

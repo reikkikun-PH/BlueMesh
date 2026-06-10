@@ -24,6 +24,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation3.runtime.NavKey
 import com.example.bitchat_lite.Chat
 import com.example.bitchat_lite.ContactsList
@@ -53,13 +56,29 @@ fun MainScreen(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    DisposableEffect(Unit) {
-        viewModel.startScanning()
-        val name = viewModel.displayName
-        if (name.isNotEmpty()) {
-            viewModel.toggleDiscoverability(true)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var wasDiscoverableBeforeStop by remember { mutableStateOf(true) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    viewModel.startScanning()
+                    if (wasDiscoverableBeforeStop) {
+                        viewModel.toggleDiscoverability(true)
+                    }
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    wasDiscoverableBeforeStop = isAdvertising
+                    viewModel.stopScanning()
+                    viewModel.toggleDiscoverability(false)
+                }
+                else -> {}
+            }
         }
+        lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
             viewModel.stopScanning()
         }
     }
