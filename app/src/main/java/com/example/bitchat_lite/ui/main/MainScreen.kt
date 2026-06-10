@@ -152,7 +152,7 @@ fun MainScreen(
                     selected = false,
                     onClick = {
                         scope.launch { drawerState.close() }
-                        Toast.makeText(context, "BlueMesh v26.1 — Offline Bluetooth Chat", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "BlueMesh v26.2 — Offline Bluetooth Chat", Toast.LENGTH_SHORT).show()
                     },
                     colors = NavigationDrawerItemDefaults.colors(
                         unselectedContainerColor = Color.Transparent
