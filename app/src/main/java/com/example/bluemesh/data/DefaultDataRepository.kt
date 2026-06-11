@@ -97,8 +97,12 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                         Log.d("DataRepository", "Mesh: Dropped message because recipient hash ${message.recipientHash} did not match my hash $myUuidHash")
                         return@collect
                     }
-                    val resolved = getContacts().find { it.uuid.hashCode() == message.senderHash }?.uuid
-                        ?: bluetoothHandler.discoveredPeers.value.find { it.uuid.hashCode() == message.senderHash }?.uuid
+                    val resolved = if (activeChatUuid.isNotEmpty() && (activeChatUuid.hashCode() == message.senderHash || (activeChatUuid.startsWith("mesh_") && activeChatUuid.substringAfter("mesh_").toIntOrNull() == message.senderHash))) {
+                        activeChatUuid
+                    } else {
+                        getContacts().find { it.uuid.hashCode() == message.senderHash }?.uuid
+                            ?: bluetoothHandler.discoveredPeers.value.find { it.uuid.hashCode() == message.senderHash }?.uuid
+                    }
                     
                     if (resolved != null) {
                         resolved

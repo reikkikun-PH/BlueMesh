@@ -52,8 +52,7 @@ class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
         // Filter by Service UUID
         if (advertisedDevice.isAdvertisingService(BLEUUID(SERVICE_UUID))) {
             if (advertisedDevice.haveManufacturerData()) {
-                String mDataString = advertisedDevice.getManufacturerData();
-                std::string mData(mDataString.c_str(), mDataString.length());
+                std::string mData = advertisedDevice.getManufacturerData();
                 
                 // Distinguish between connectable (Peer Discovery) and non-connectable (Mesh Message)
                 if (advertisedDevice.isConnectable()) {

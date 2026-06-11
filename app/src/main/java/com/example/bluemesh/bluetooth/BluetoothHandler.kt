@@ -820,8 +820,16 @@ class BluetoothHandler(private val context: Context) {
                 delay(150)
             }
 
-            val senderHash = senderUuid.hashCode()
-            val recipientHash = recipientUuid.hashCode()
+            val senderHash = if (senderUuid.startsWith("mesh_")) {
+                senderUuid.substringAfter("mesh_").toIntOrNull() ?: senderUuid.hashCode()
+            } else {
+                senderUuid.hashCode()
+            }
+            val recipientHash = if (recipientUuid.startsWith("mesh_")) {
+                recipientUuid.substringAfter("mesh_").toIntOrNull() ?: recipientUuid.hashCode()
+            } else {
+                recipientUuid.hashCode()
+            }
             val messageBytes = messageText.toByteArray(Charsets.UTF_8)
             
             val maxTextBytes = 15
