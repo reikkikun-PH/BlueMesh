@@ -16,6 +16,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.core.internal.view.SupportMenu
+import com.example.bluemesh.data.CryptoUtils
 import com.example.bluemesh.data.models.BluetoothPeer
 import com.example.bluemesh.data.models.ChatMessage
 import com.example.bluemesh.data.models.ConnectionStatus
@@ -98,6 +99,7 @@ class BluetoothHandler(private val context: Context) {
     val isAdvertising: StateFlow<Boolean> = _isAdvertising.asStateFlow()
 
     var onPeerReadyCallback: ((String) -> Unit)? = null
+    var onKeyExchangeReceived: ((String, ByteArray) -> Unit)? = null
 
     private fun showToast(message: String) {
         try {
@@ -302,6 +304,16 @@ class BluetoothHandler(private val context: Context) {
                 )
             }
             if (characteristic.uuid == MESSAGE_CHARACTERISTIC_UUID && value != null) {
+                if (value.isNotEmpty() && value[0] == 2.toByte()) {
+                    if (value.size >= 17) {
+                        val senderUuidBytes = value.copyOfRange(1, 17)
+                        val senderUuid = bytesToUuid(senderUuidBytes).toString()
+                        val keyBytes = value.copyOfRange(17, value.size)
+                        Log.i(TAG, "Server received key exchange request from ${device.address} for UUID $senderUuid")
+                        onKeyExchangeReceived?.invoke(senderUuid, keyBytes)
+                    }
+                    return
+                }
                 val messageText = parseAndDecompress(value)
                 if (messageText != null) {
                     Log.i(TAG, "Server received write request from ${device.address}: $messageText")
@@ -538,6 +550,16 @@ class BluetoothHandler(private val context: Context) {
                 @Suppress("DEPRECATION")
                 val value = characteristic.value
                 if (value != null) {
+                    if (value.isNotEmpty() && value[0] == 2.toByte()) {
+                        if (value.size >= 17) {
+                            val senderUuidBytes = value.copyOfRange(1, 17)
+                            val senderUuid = bytesToUuid(senderUuidBytes).toString()
+                            val keyBytes = value.copyOfRange(17, value.size)
+                            Log.i(TAG, "Client received key exchange notification from ${gatt.device.address} for UUID $senderUuid")
+                            onKeyExchangeReceived?.invoke(senderUuid, keyBytes)
+                        }
+                        return
+                    }
                     val messageText = parseAndDecompress(value)
                     if (messageText != null) {
                         Log.i(TAG, "Client received notification: $messageText")
@@ -1092,28 +1114,38 @@ class BluetoothHandler(private val context: Context) {
             return null
         }
         val packetType = value[0]
-        val compressionFlag = value[1]
+        val flags = value[1].toInt()
         if (packetType != 1.toByte()) {
             Log.w(TAG, "parseAndDecompress: Unknown packet type ${packetType.toInt()}")
             return null
         }
-        return try {
-            if (compressionFlag == 1.toByte()) {
-                val compressedData = value.copyOfRange(2, value.size)
-                val factory = LZ4Factory.fastestInstance()
-                val decompressor = factory.safeDecompressor()
-                val tempDest = ByteArray(32768)
-                val decompressedLength = decompressor.decompress(
-                    compressedData, 0, compressedData.size,
-                    tempDest, 0, tempDest.size
-                )
-                String(tempDest, 0, decompressedLength, Charsets.UTF_8)
-            } else {
-                String(value, 2, value.size - 2, Charsets.UTF_8)
+        
+        val isEncrypted = (flags and 2) != 0
+        val isCompressed = (flags and 1) != 0
+        
+        return if (isEncrypted) {
+            if (value.size < 6) return null
+            val encryptedPkg = value.copyOfRange(2, value.size)
+            String(encryptedPkg, Charsets.ISO_8859_1)
+        } else {
+            try {
+                if (isCompressed) {
+                    val compressedData = value.copyOfRange(2, value.size)
+                    val factory = LZ4Factory.fastestInstance()
+                    val decompressor = factory.safeDecompressor()
+                    val tempDest = ByteArray(32768)
+                    val decompressedLength = decompressor.decompress(
+                        compressedData, 0, compressedData.size,
+                        tempDest, 0, tempDest.size
+                    )
+                    String(tempDest, 0, decompressedLength, Charsets.UTF_8)
+                } else {
+                    String(value, 2, value.size - 2, Charsets.UTF_8)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "parseAndDecompress failed to decompress/parse", e)
+                null
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "parseAndDecompress failed to decompress/parse", e)
-            null
         }
     }
 
@@ -1228,6 +1260,121 @@ class BluetoothHandler(private val context: Context) {
         }
 
         Log.e(TAG, "No active connection or characteristic to send message")
+        return false
+    }
+
+    fun sendPublicKey(myUuidStr: String, publicKeyBytes: ByteArray): Boolean {
+        val uuid = try { UUID.fromString(myUuidStr) } catch(e: Exception) { return false }
+        val uuidBytes = uuidToBytes(uuid)
+        val payload = ByteArray(publicKeyBytes.size + 17)
+        payload[0] = 2
+        payload[1] = 0 // reserved/flags
+        System.arraycopy(uuidBytes, 0, payload, 1, 16)
+        System.arraycopy(publicKeyBytes, 0, payload, 17, publicKeyBytes.size)
+
+        val charClient = messageCharacteristic
+        val gattClient = bluetoothGatt
+        if (gattClient != null && charClient != null) {
+            @Suppress("DEPRECATION")
+            charClient.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            @Suppress("DEPRECATION")
+            charClient.value = payload
+            val success = gattClient.writeCharacteristic(charClient)
+            Log.i(TAG, "Client sent public key over write: success=$success")
+            return success
+        }
+
+        val server = bluetoothGattServer
+        val activeClient = connectedClientDevice
+        if (server != null && activeClient != null) {
+            val service = server.getService(SERVICE_UUID)
+            val characteristic = service?.getCharacteristic(MESSAGE_CHARACTERISTIC_UUID)
+            if (characteristic != null) {
+                @Suppress("DEPRECATION")
+                characteristic.value = payload
+                val success = server.notifyCharacteristicChanged(activeClient, characteristic, false)
+                Log.i(TAG, "Server sent public key over notify: success=$success")
+                return success
+            }
+        }
+        Log.w(TAG, "sendPublicKey failed: no active GATT link")
+        return false
+    }
+
+    fun sendMessageEncrypted(ciphertext: ByteArray, messageId: Int): Boolean {
+        val payload = ByteArray(ciphertext.size + 6)
+        payload[0] = 1 // Chat message
+        payload[1] = 2 // Encryption flag (bit 1 is 1)
+        
+        val encryptedMessageId = messageId or java.lang.Integer.MIN_VALUE
+        val buffer = ByteBuffer.allocate(4)
+        buffer.order(ByteOrder.BIG_ENDIAN)
+        buffer.putInt(encryptedMessageId)
+        System.arraycopy(buffer.array(), 0, payload, 2, 4)
+        System.arraycopy(ciphertext, 0, payload, 6, ciphertext.size)
+
+        val maxPayloadSize = negotiatedMtu - 3
+        val chunks = payload.toList().chunked(maxPayloadSize).map { it.toByteArray() }
+
+        // Client send
+        val charClient = messageCharacteristic
+        val gattClient = bluetoothGatt
+        if (gattClient != null && charClient != null) {
+            var success = true
+            for (chunk in chunks) {
+                val writeSuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gattClient.writeCharacteristic(
+                        charClient,
+                        chunk,
+                        BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    ) == BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    charClient.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    @Suppress("DEPRECATION")
+                    charClient.value = chunk
+                    @Suppress("DEPRECATION")
+                    gattClient.writeCharacteristic(charClient)
+                }
+                if (!writeSuccess) {
+                    success = false
+                    break
+                }
+                if (chunks.size > 1) {
+                    try { Thread.sleep(50) } catch(e: Exception) {}
+                }
+            }
+            if (success) return true
+        }
+
+        // Server notify
+        val server = bluetoothGattServer
+        val activeClient = connectedClientDevice
+        if (server != null && activeClient != null) {
+            val service = server.getService(SERVICE_UUID)
+            val characteristic = service?.getCharacteristic(MESSAGE_CHARACTERISTIC_UUID)
+            if (characteristic != null) {
+                var success = true
+                for (chunk in chunks) {
+                    val notifySuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        server.notifyCharacteristicChanged(activeClient, characteristic, false, chunk) == BluetoothStatusCodes.SUCCESS
+                    } else {
+                        @Suppress("DEPRECATION")
+                        characteristic.value = chunk
+                        @Suppress("DEPRECATION")
+                        server.notifyCharacteristicChanged(activeClient, characteristic, false)
+                    }
+                    if (!notifySuccess) {
+                        success = false
+                        break
+                    }
+                    if (chunks.size > 1) {
+                        try { Thread.sleep(50) } catch(e: Exception) {}
+                    }
+                }
+                if (success) return true
+            }
+        }
         return false
     }
 

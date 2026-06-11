@@ -10,18 +10,28 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
 
     companion object {
         private const val DATABASE_NAME = "bluemesh_offline.db"
-        private const val DATABASE_VERSION = 1
+        private const val DATABASE_VERSION = 2
     }
 
     override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE Contacts (\n    uuid TEXT PRIMARY KEY,\n    name TEXT\n)")
+        db.execSQL("CREATE TABLE Contacts (\n    uuid TEXT PRIMARY KEY,\n    name TEXT,\n    session_key TEXT\n)")
         db.execSQL("CREATE TABLE QueuedMessages (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    contact_uuid TEXT,\n    text TEXT,\n    timestamp INTEGER,\n    status TEXT,\n    is_from_me INTEGER\n)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS Contacts")
-        db.execSQL("DROP TABLE IF EXISTS QueuedMessages")
-        onCreate(db)
+        if (oldVersion < 2) {
+            try {
+                db.execSQL("ALTER TABLE Contacts ADD COLUMN session_key TEXT")
+            } catch (e: Exception) {
+                db.execSQL("DROP TABLE IF EXISTS Contacts")
+                db.execSQL("DROP TABLE IF EXISTS QueuedMessages")
+                onCreate(db)
+            }
+        } else {
+            db.execSQL("DROP TABLE IF EXISTS Contacts")
+            db.execSQL("DROP TABLE IF EXISTS QueuedMessages")
+            onCreate(db)
+        }
     }
 
     fun saveContact(uuid: String, name: String) {
@@ -117,5 +127,24 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
             put("status", "SENT")
         }
         db.update("QueuedMessages", values, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun saveSessionKey(uuid: String, sessionKey: String) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("session_key", sessionKey)
+        }
+        db.update("Contacts", values, "uuid = ?", arrayOf(uuid))
+    }
+
+    fun getSessionKey(uuid: String): String? {
+        val db = readableDatabase
+        val cursor = db.rawQuery("SELECT session_key FROM Contacts WHERE uuid = ?", arrayOf(uuid))
+        var key: String? = null
+        if (cursor.moveToFirst()) {
+            key = cursor.getString(0)
+        }
+        cursor.close()
+        return key
     }
 }
