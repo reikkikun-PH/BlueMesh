@@ -234,8 +234,8 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                     for (peer in peers) {
                         if (isContact(peer.uuid)) {
                             val storedContact = getContacts().find { it.uuid == peer.uuid }
-                            if (storedContact != null && storedContact.name != peer.name) {
-                                Log.i("DataRepository", "Contact sync: Discovered name update for contact ${peer.uuid}: '${storedContact.name}' -> '${peer.name}'")
+                            if (storedContact != null && (storedContact.name != peer.name || storedContact.isOfficial != peer.isOfficial)) {
+                                Log.i("DataRepository", "Contact sync: Discovered name/official update for contact ${peer.uuid}: '${storedContact.name}' -> '${peer.name}', official: ${storedContact.isOfficial} -> ${peer.isOfficial}")
                                 saveContact(peer.uuid, peer.name)
                             }
                         }
@@ -338,7 +338,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
     override fun getContacts(): List<BluetoothPeer> {
         val list = if (isPasscodeEnabled()) dbHelper.getContactsList() else emptyList()
         val currentDiscovered = bluetoothHandler.discoveredPeers.value
-        return list.map { (uuid, name) ->
+        return list.map { (uuid, name, isOfficialDb) ->
             val discoveredPeer = currentDiscovered.find { it.uuid == uuid }
             val address = discoveredPeer?.address ?: ""
             BluetoothPeer(
@@ -347,13 +347,15 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                 device = discoveredPeer?.device,
                 lastSeen = discoveredPeer?.lastSeen ?: 0L,
                 uuid = uuid,
-                hasPasscode = discoveredPeer?.hasPasscode ?: false
+                hasPasscode = discoveredPeer?.hasPasscode ?: isOfficialDb,
+                isOfficial = isOfficialDb || (discoveredPeer?.isOfficial == true)
             )
         }
     }
 
     override fun saveContact(uuid: String, name: String) {
-        dbHelper.saveContact(uuid, name)
+        val isOfficial = bluetoothHandler.discoveredPeers.value.find { it.uuid == uuid }?.isOfficial ?: false
+        dbHelper.saveContact(uuid, name, isOfficial)
     }
 
     override fun deleteContact(uuid: String) {

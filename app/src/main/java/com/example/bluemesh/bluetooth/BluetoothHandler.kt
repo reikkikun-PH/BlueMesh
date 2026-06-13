@@ -162,10 +162,12 @@ class BluetoothHandler(private val context: Context) {
             val manufacturerData = scanRecord.getManufacturerSpecificData(SupportMenu.USER_MASK)
             if (manufacturerData != null && manufacturerData.size >= 16) {
                 val peerUuid = bytesToUuid(manufacturerData.copyOfRange(0, 16)).toString()
-                val hasPasscode = if (manufacturerData.size >= 17) manufacturerData[16] == 1.toByte() else false
+                val passcodeByte = if (manufacturerData.size >= 17) manufacturerData[16] else 0.toByte()
+                val hasPasscode = passcodeByte == 1.toByte() || passcodeByte == 2.toByte()
+                val isOfficial = passcodeByte == 2.toByte()
                 val nameOffset = if (manufacturerData.size >= 17) 17 else 16
                 val displayName = String(manufacturerData, nameOffset, manufacturerData.size - nameOffset, Charsets.UTF_8).trim()
-                Log.d(TAG, "onScanResult: Parsed BlueMesh display name '$displayName', hasPasscode=$hasPasscode, and UUID '$peerUuid' for ${device.address}")
+                Log.d(TAG, "onScanResult: Parsed BlueMesh display name '$displayName', hasPasscode=$hasPasscode, isOfficial=$isOfficial, and UUID '$peerUuid' for ${device.address}")
                 
                 if (displayName.isNotEmpty()) {
                     val now = System.currentTimeMillis()
@@ -175,7 +177,8 @@ class BluetoothHandler(private val context: Context) {
                         device = device,
                         lastSeen = now,
                         uuid = peerUuid,
-                        hasPasscode = hasPasscode
+                        hasPasscode = hasPasscode,
+                        isOfficial = isOfficial
                     )
                     _discoveredPeers.update { current ->
                         val filtered = current.filterNot { it.address == peer.address || it.uuid == peer.uuid }
@@ -776,7 +779,8 @@ class BluetoothHandler(private val context: Context) {
             }
 
             val isPasscode = prefs.getBoolean("is_passcode_enabled", false)
-            val passcodeFlag = if (isPasscode) 1.toByte() else 0.toByte()
+            val isOfficial = false // Will be true in Volunteers Edition copy
+            val passcodeFlag = if (isOfficial) 2.toByte() else if (isPasscode) 1.toByte() else 0.toByte()
 
             val manufacturerData = ByteArray(17 + nameBytes.size)
             System.arraycopy(uuidBytes, 0, manufacturerData, 0, 16)

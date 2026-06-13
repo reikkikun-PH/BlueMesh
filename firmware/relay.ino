@@ -52,7 +52,8 @@ class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
         // Filter by Service UUID
         if (advertisedDevice.isAdvertisingService(BLEUUID(SERVICE_UUID))) {
             if (advertisedDevice.haveManufacturerData()) {
-                std::string mData = advertisedDevice.getManufacturerData();
+                auto rawData = advertisedDevice.getManufacturerData();
+                std::string mData(rawData.c_str(), rawData.length());
                 
                 // Distinguish between connectable (Peer Discovery) and non-connectable (Mesh Message)
                 if (advertisedDevice.isConnectable()) {
@@ -204,10 +205,13 @@ void loop() {
         oAdvertisementData.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
         // Add Service UUID
         oAdvertisementData.setCompleteServices(BLEUUID(SERVICE_UUID));
-        // Add exact Manufacturer Data payload (Company ID + Message ID + Message Text)
-        oAdvertisementData.setManufacturerData(String(payloadToAdvertise.data(), payloadToAdvertise.length()));
-
         pAdvertising->setAdvertisementData(oAdvertisementData);
+
+        // Construct Scan Response Data (prevents exceeding the 31-byte BLE limit)
+        BLEAdvertisementData oScanResponseData;
+        // Add exact Manufacturer Data payload (Company ID + Message ID + Message Text)
+        oScanResponseData.setManufacturerData(String(payloadToAdvertise.data(), payloadToAdvertise.length()));
+        pAdvertising->setScanResponseData(oScanResponseData);
 
         // Start broadcasting
         pAdvertising->start();

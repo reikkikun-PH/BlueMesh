@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -42,6 +43,13 @@ fun ChatScreen(
     val messages by viewModel.chatMessages.collectAsStateWithLifecycle()
     val status by viewModel.connectionStatus.collectAsStateWithLifecycle()
     val isReady by viewModel.isReady.collectAsStateWithLifecycle()
+
+    val repository = remember { DefaultDataRepository.getInstance(context) }
+    val discoveredPeers by repository.discoveredPeers.collectAsStateWithLifecycle()
+    val isOfficial = remember(discoveredPeers, peerUuid) {
+        discoveredPeers.find { it.uuid == peerUuid }?.isOfficial == true ||
+        repository.getContacts().find { it.uuid == peerUuid }?.isOfficial == true
+    }
 
     var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -110,12 +118,23 @@ fun ChatScreen(
                 Spacer(modifier = Modifier.width(8.dp))
 
                 Column {
-                    Text(
-                        text = peerName,
-                        color = Color.White,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = peerName,
+                            color = Color.White,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (isOfficial) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = "Official Profile",
+                                tint = Color(0xFF3B82F6),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
 
                     // Connection Status text with color
                     val (statusText, statusColor) = when (status) {

@@ -9,3 +9,4 @@ import kotlinx.serialization.Serializable
 @Serializable data object ContactsList : NavKey
 @Serializable data object SecuritySettings : NavKey
 @Serializable data class Lock(val mode: String) : NavKey
+@Serializable data object SetupPasscode : NavKey

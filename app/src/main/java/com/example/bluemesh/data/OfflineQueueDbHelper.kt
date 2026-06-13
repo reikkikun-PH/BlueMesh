@@ -10,35 +10,40 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
 
     companion object {
         private const val DATABASE_NAME = "bluemesh_offline.db"
-        private const val DATABASE_VERSION = 2
+        private const val DATABASE_VERSION = 3
     }
 
     override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE Contacts (\n    uuid TEXT PRIMARY KEY,\n    name TEXT,\n    session_key TEXT\n)")
+        db.execSQL("CREATE TABLE Contacts (\n    uuid TEXT PRIMARY KEY,\n    name TEXT,\n    session_key TEXT,\n    is_official INTEGER DEFAULT 0\n)")
         db.execSQL("CREATE TABLE QueuedMessages (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    contact_uuid TEXT,\n    text TEXT,\n    timestamp INTEGER,\n    status TEXT,\n    is_from_me INTEGER\n)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion < 2) {
+        var currentVersion = oldVersion
+        if (currentVersion < 2) {
             try {
                 db.execSQL("ALTER TABLE Contacts ADD COLUMN session_key TEXT")
             } catch (e: Exception) {
-                db.execSQL("DROP TABLE IF EXISTS Contacts")
-                db.execSQL("DROP TABLE IF EXISTS QueuedMessages")
-                onCreate(db)
+                // Ignore if already exists
             }
-        } else {
-            db.execSQL("DROP TABLE IF EXISTS Contacts")
-            db.execSQL("DROP TABLE IF EXISTS QueuedMessages")
-            onCreate(db)
+            currentVersion = 2
+        }
+        if (currentVersion < 3) {
+            try {
+                db.execSQL("ALTER TABLE Contacts ADD COLUMN is_official INTEGER DEFAULT 0")
+            } catch (e: Exception) {
+                // Ignore if already exists
+            }
+            currentVersion = 3
         }
     }
 
-    fun saveContact(uuid: String, name: String) {
+    fun saveContact(uuid: String, name: String, isOfficial: Boolean) {
         val db = writableDatabase
         val values = ContentValues().apply {
             put("uuid", uuid)
             put("name", name)
+            put("is_official", if (isOfficial) 1 else 0)
         }
         db.insertWithOnConflict("Contacts", null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
@@ -56,15 +61,16 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
         return exists
     }
 
-    fun getContactsList(): List<Pair<String, String>> {
-        val list = mutableListOf<Pair<String, String>>()
+    fun getContactsList(): List<Triple<String, String, Boolean>> {
+        val list = mutableListOf<Triple<String, String, Boolean>>()
         val db = readableDatabase
-        val cursor = db.rawQuery("SELECT uuid, name FROM Contacts", null)
+        val cursor = db.rawQuery("SELECT uuid, name, is_official FROM Contacts", null)
         if (cursor.moveToFirst()) {
             do {
                 val uuid = cursor.getString(0)
                 val name = cursor.getString(1)
-                list.add(Pair(uuid, name))
+                val isOfficial = cursor.getInt(2) == 1
+                list.add(Triple(uuid, name, isOfficial))
             } while (cursor.moveToNext())
         }
         cursor.close()

@@ -26,8 +26,12 @@ fun MainNavigation() {
     val repository = remember { DefaultDataRepository.getInstance(context) }
     val prefs = remember { context.getSharedPreferences("bluemesh_prefs", Context.MODE_PRIVATE) }
     val initialName = remember { prefs.getString("display_name", "") ?: "" }
+    val isVolunteersEdition = false // Set to true in Volunteers Edition copy
+    val passcodeEnabled = repository.isPasscodeEnabled()
 
-    val startDestination = if (initialName.isEmpty()) Setup else Main
+    val startDestination = if (initialName.isEmpty()) Setup 
+                           else if (isVolunteersEdition && !passcodeEnabled) SetupPasscode 
+                           else Main
     val backStack = rememberNavBackStack(startDestination)
 
     NavDisplay(
@@ -35,8 +39,10 @@ fun MainNavigation() {
         onBack = {
             if (backStack.size > 1) {
                 val last = backStack.lastOrNull()
-                if (last == Main && startDestination == Setup) {
-                    // Prevent back navigation from Main to Setup
+                if (last == Main && (startDestination == Setup || startDestination == SetupPasscode)) {
+                    // Prevent back navigation from Main to Setup/SetupPasscode
+                } else if (last == SetupPasscode && startDestination == Setup) {
+                    // Prevent back navigation from SetupPasscode to Setup
                 } else {
                     backStack.removeLastOrNull()
                 }
@@ -46,8 +52,21 @@ fun MainNavigation() {
             entry<Setup> {
                 SetupScreen(
                     onSetupComplete = {
-                        backStack.add(Main)
+                        if (isVolunteersEdition && !repository.isPasscodeEnabled()) {
+                            backStack.add(SetupPasscode)
+                        } else {
+                            backStack.add(Main)
+                        }
                     }
+                )
+            }
+            entry<SetupPasscode> {
+                LockScreen(
+                    mode = "setup",
+                    onSuccess = {
+                        backStack.add(Main)
+                    },
+                    onBack = null
                 )
             }
             entry<Main> {
