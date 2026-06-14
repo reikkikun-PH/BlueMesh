@@ -37,4 +37,6 @@ interface DataRepository {
     fun savePasscode(pin: String)
     fun verifyPasscode(pin: String): Boolean
     fun disablePasscode()
+    fun isShareLocationEnabled(): Boolean
+    fun setShareLocationEnabled(enabled: Boolean)
 }

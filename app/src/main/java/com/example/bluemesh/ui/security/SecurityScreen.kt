@@ -12,6 +12,9 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -19,6 +22,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.filled.GpsFixed
 import com.example.bluemesh.data.DefaultDataRepository
 
 @Composable
@@ -30,6 +34,7 @@ fun SecurityScreen(
     val context = LocalContext.current
     val repository = remember { DefaultDataRepository.getInstance(context.applicationContext) }
     val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
+    var isShareLocationEnabled by remember { mutableStateOf(repository.isShareLocationEnabled()) }
 
     Box(
         modifier = Modifier
@@ -199,6 +204,68 @@ fun SecurityScreen(
                                 tint = Color(0xFF64748B)
                             )
                         }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    HorizontalDivider(
+                        color = Color(0xFF334155)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Share Device Location row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(
+                                        color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.GpsFixed,
+                                    contentDescription = "Share Location",
+                                    tint = Color(0xFF10B981)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column {
+                                Text(
+                                    text = "Share Device Location",
+                                    color = Color.White,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Allow to share proximity location",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+
+                        Switch(
+                            checked = isShareLocationEnabled,
+                            onCheckedChange = { checked ->
+                                repository.setShareLocationEnabled(checked)
+                                isShareLocationEnabled = checked
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = Color(0xFF10B981),
+                                uncheckedThumbColor = Color(0xFF94A3B8),
+                                uncheckedTrackColor = Color(0xFF334155)
+                            )
+                        )
                     }
                 }
             }

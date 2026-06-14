@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -47,8 +48,15 @@ fun ChatScreen(
     val repository = remember { DefaultDataRepository.getInstance(context) }
     val discoveredPeers by repository.discoveredPeers.collectAsStateWithLifecycle()
     val isOfficial = remember(discoveredPeers, peerUuid) {
-        discoveredPeers.find { it.uuid == peerUuid }?.isOfficial == true ||
-        repository.getContacts().find { it.uuid == peerUuid }?.isOfficial == true
+        val peerNorm = peerUuid.replace("-", "").lowercase()
+        discoveredPeers.find {
+            val dNorm = it.uuid.replace("-", "").lowercase()
+            dNorm == peerNorm || (peerNorm.length == 16 && dNorm.startsWith(peerNorm)) || (dNorm.length == 16 && peerNorm.startsWith(dNorm))
+        }?.isOfficial == true ||
+        repository.getContacts().find {
+            val cNorm = it.uuid.replace("-", "").lowercase()
+            cNorm == peerNorm || (peerNorm.length == 16 && cNorm.startsWith(peerNorm)) || (cNorm.length == 16 && peerNorm.startsWith(cNorm))
+        }?.isOfficial == true
     }
 
     var textInput by remember { mutableStateOf("") }
@@ -123,7 +131,10 @@ fun ChatScreen(
                             text = peerName,
                             color = Color.White,
                             fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         if (isOfficial) {
                             Spacer(modifier = Modifier.width(6.dp))

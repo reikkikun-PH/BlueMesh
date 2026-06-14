@@ -8,6 +8,9 @@ A peer-to-peer, decentralized Bluetooth mesh messaging application for Android. 
 
 - **P2P Mesh Network**: Connect directly to nearby peers to form a local communications mesh.
 - **ESP32 Flooding Relay Support**: Seamless range extension using standalone ESP32 nodes that capture, deduplicate, and re-broadcast BLE advertisement messages.
+- **Proximity Distance Detection**: Detect other users' approximate distance via Bluetooth signal strength (RSSI) using the Log-Distance Path Loss model (available in both editions, but only shown if the detected user has opted-in to share location).
+- **Opt-In Location Privacy**: A security setting ("Share Device Location" - "Allow to share proximity location") that lets users decide whether to share their location. By default, a user cannot be detected by proximity distance estimators or tracking radars unless they explicitly enable this option.
+- **Volunteers Edition Proximity Radar**: A private edition of the app featuring a radial sweep radar graphic to locate users, dynamic signal trend tracking (Getting Closer 📈, Moving Away 📉, Stable ➡️), continuous scanning mode, and live revocation protection (freezes coordinates and shows a warning if a user disables location sharing during active tracking).
 - **Passcode Lock Screen**: Secure numerical PIN lock (SHA-256 protected) enforcing private local access.
 - **5-Minute Auto-Lock**: Automatically locks the application if it is backgrounded for more than 5 minutes.
 - **Persistent Offline Queue**: Local SQLite database storing queued messages when peers are out of range; messages are automatically synchronized once they reappear.

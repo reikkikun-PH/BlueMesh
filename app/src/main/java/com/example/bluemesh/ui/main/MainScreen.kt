@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -152,7 +153,7 @@ fun MainScreen(
                     selected = false,
                     onClick = {
                         scope.launch { drawerState.close() }
-                        Toast.makeText(context, "BlueMesh v26.3 — Offline Bluetooth Chat", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "BlueMesh v26.4 — Offline Bluetooth Chat", Toast.LENGTH_SHORT).show()
                     },
                     colors = NavigationDrawerItemDefaults.colors(
                         unselectedContainerColor = Color.Transparent
@@ -387,7 +388,10 @@ fun PeerItem(
                         text = peer.name,
                         color = Color.White,
                         fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                     if (peer.isOfficial) {
                         Spacer(modifier = Modifier.width(6.dp))
@@ -404,6 +408,16 @@ fun PeerItem(
                     color = Color(0xFF64748B),
                     fontSize = 13.sp
                 )
+                if (peer.rssi != -100 && peer.allowTracking) {
+                    val dist = peer.estimatedDistance
+                    val distFormatted = if (dist < 1.0) "Within 1m" else "Est. " + ((dist * 10).toInt() / 10.0) + "m"
+                    Text(
+                        text = "$distFormatted (Signal: ${peer.rssi} dBm)",
+                        color = Color(0xFF3B82F6),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {

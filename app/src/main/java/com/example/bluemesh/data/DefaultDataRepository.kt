@@ -116,6 +116,15 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
         }
 
         bluetoothHandler.onKeyExchangeReceived = { senderUuid, peerPublicKeyBytes ->
+            bluetoothHandler.updatePeerUuid(senderUuid)
+            val activeNorm = activeChatUuid.replace("-", "").lowercase()
+            val senderNorm = senderUuid.replace("-", "").lowercase()
+            if (activeNorm.length == 16 && senderNorm.startsWith(activeNorm)) {
+                activeChatUuid = senderUuid
+                if (isPasscodeEnabled()) {
+                    _chatMessages.value = dbHelper.getMessagesForContact(senderUuid)
+                }
+            }
             scope.launch {
                 Log.i("DataRepository", "Received public key from $senderUuid (${peerPublicKeyBytes.size} bytes)")
                 if (myKeyPair == null) {
@@ -233,10 +242,22 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                 if (isPasscodeEnabled()) {
                     for (peer in peers) {
                         if (isContact(peer.uuid)) {
-                            val storedContact = getContacts().find { it.uuid == peer.uuid }
-                            if (storedContact != null && (storedContact.name != peer.name || storedContact.isOfficial != peer.isOfficial)) {
-                                Log.i("DataRepository", "Contact sync: Discovered name/official update for contact ${peer.uuid}: '${storedContact.name}' -> '${peer.name}', official: ${storedContact.isOfficial} -> ${peer.isOfficial}")
-                                saveContact(peer.uuid, peer.name)
+                            val storedContact = getContacts().find { 
+                                val storedNorm = it.uuid.replace("-", "").lowercase()
+                                val peerNorm = peer.uuid.replace("-", "").lowercase()
+                                storedNorm == peerNorm || (peerNorm.length == 16 && storedNorm.startsWith(peerNorm)) || (storedNorm.length == 16 && peerNorm.startsWith(storedNorm))
+                            }
+                            if (storedContact != null) {
+                                val storedNorm = storedContact.uuid.replace("-", "").lowercase()
+                                val peerNorm = peer.uuid.replace("-", "").lowercase()
+                                if (storedNorm.length == 16 && peerNorm.length > 16) {
+                                    dbHelper.deleteContact(storedContact.uuid)
+                                    saveContact(peer.uuid, peer.name)
+                                    Log.i("DataRepository", "Contact sync: Migrated contact ${storedContact.uuid} to full UUID ${peer.uuid}")
+                                } else if (storedContact.name != peer.name || storedContact.isOfficial != peer.isOfficial) {
+                                    Log.i("DataRepository", "Contact sync: Discovered name/official update for contact ${storedContact.uuid}: '${storedContact.name}' -> '${peer.name}', official: ${storedContact.isOfficial} -> ${peer.isOfficial}")
+                                    saveContact(storedContact.uuid, peer.name)
+                                }
                             }
                         }
                     }
@@ -339,7 +360,11 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
         val list = if (isPasscodeEnabled()) dbHelper.getContactsList() else emptyList()
         val currentDiscovered = bluetoothHandler.discoveredPeers.value
         return list.map { (uuid, name, isOfficialDb) ->
-            val discoveredPeer = currentDiscovered.find { it.uuid == uuid }
+            val discoveredPeer = currentDiscovered.find {
+                val storedNorm = uuid.replace("-", "").lowercase()
+                val peerNorm = it.uuid.replace("-", "").lowercase()
+                storedNorm == peerNorm || (peerNorm.length == 16 && storedNorm.startsWith(peerNorm)) || (storedNorm.length == 16 && peerNorm.startsWith(storedNorm))
+            }
             val address = discoveredPeer?.address ?: ""
             BluetoothPeer(
                 address = address,
@@ -354,7 +379,11 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
     }
 
     override fun saveContact(uuid: String, name: String) {
-        val isOfficial = bluetoothHandler.discoveredPeers.value.find { it.uuid == uuid }?.isOfficial ?: false
+        val isOfficial = bluetoothHandler.discoveredPeers.value.find {
+            val storedNorm = uuid.replace("-", "").lowercase()
+            val peerNorm = it.uuid.replace("-", "").lowercase()
+            storedNorm == peerNorm || (peerNorm.length == 16 && storedNorm.startsWith(peerNorm)) || (storedNorm.length == 16 && peerNorm.startsWith(storedNorm))
+        }?.isOfficial ?: false
         dbHelper.saveContact(uuid, name, isOfficial)
     }
 
@@ -363,7 +392,12 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
     }
 
     override fun isContact(uuid: String): Boolean {
-        return dbHelper.isContact(uuid)
+        if (dbHelper.isContact(uuid)) return true
+        val normalized = uuid.replace("-", "").lowercase()
+        return dbHelper.getContactsList().any {
+            val dbNorm = it.first.replace("-", "").lowercase()
+            dbNorm == normalized || (normalized.length == 16 && dbNorm.startsWith(normalized)) || (dbNorm.length == 16 && normalized.startsWith(dbNorm))
+        }
     }
 
     override fun setActiveChat(uuid: String) {
@@ -450,6 +484,19 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
             .putString("user_uuid", UUID.randomUUID().toString())
             .apply()
             
+        val name = getDisplayName()
+        if (name.isNotEmpty()) {
+            bluetoothHandler.stopAdvertising()
+            bluetoothHandler.startAdvertising(name)
+        }
+    }
+
+    override fun isShareLocationEnabled(): Boolean {
+        return prefs.getBoolean("is_share_location_enabled", false)
+    }
+
+    override fun setShareLocationEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("is_share_location_enabled", enabled).apply()
         val name = getDisplayName()
         if (name.isNotEmpty()) {
             bluetoothHandler.stopAdvertising()

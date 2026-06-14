@@ -160,14 +160,20 @@ class BluetoothHandler(private val context: Context) {
             }
             
             val manufacturerData = scanRecord.getManufacturerSpecificData(SupportMenu.USER_MASK)
-            if (manufacturerData != null && manufacturerData.size >= 16) {
-                val peerUuid = bytesToUuid(manufacturerData.copyOfRange(0, 16)).toString()
-                val passcodeByte = if (manufacturerData.size >= 17) manufacturerData[16] else 0.toByte()
-                val hasPasscode = passcodeByte == 1.toByte() || passcodeByte == 2.toByte()
-                val isOfficial = passcodeByte == 2.toByte()
-                val nameOffset = if (manufacturerData.size >= 17) 17 else 16
-                val displayName = String(manufacturerData, nameOffset, manufacturerData.size - nameOffset, Charsets.UTF_8).trim()
-                Log.d(TAG, "onScanResult: Parsed BlueMesh display name '$displayName', hasPasscode=$hasPasscode, isOfficial=$isOfficial, and UUID '$peerUuid' for ${device.address}")
+            if (manufacturerData != null && manufacturerData.size >= 8) {
+                val shortUuidBytes = manufacturerData.copyOfRange(0, 8)
+                val peerUuid = shortUuidBytes.toHexString()
+                val passcodeByte = if (manufacturerData.size >= 9) manufacturerData[8] else 0.toByte()
+                val hasPasscode = (passcodeByte.toInt() and 0x01) != 0 || (passcodeByte.toInt() and 0x02) != 0
+                val isOfficial = (passcodeByte.toInt() and 0x02) != 0
+                val allowTracking = (passcodeByte.toInt() and 0x04) != 0
+                val nameOffset = if (manufacturerData.size >= 9) 9 else 8
+                val displayName = if (manufacturerData.size > nameOffset) {
+                    String(manufacturerData, nameOffset, manufacturerData.size - nameOffset, Charsets.UTF_8).trim()
+                } else {
+                    ""
+                }
+                Log.d(TAG, "onScanResult: Parsed BlueMesh display name '$displayName', hasPasscode=$hasPasscode, isOfficial=$isOfficial, allowTracking=$allowTracking, and UUID '$peerUuid' for ${device.address}")
                 
                 if (displayName.isNotEmpty()) {
                     val now = System.currentTimeMillis()
@@ -178,11 +184,44 @@ class BluetoothHandler(private val context: Context) {
                         lastSeen = now,
                         uuid = peerUuid,
                         hasPasscode = hasPasscode,
-                        isOfficial = isOfficial
+                        isOfficial = isOfficial,
+                        rssi = result.rssi,
+                        allowTracking = allowTracking
                     )
                     _discoveredPeers.update { current ->
-                        val filtered = current.filterNot { it.address == peer.address || it.uuid == peer.uuid }
-                        (filtered + peer).sortedWith(compareBy({ it.name.lowercase() }, { it.address }))
+                        var found = false
+                        val updated = current.map { existing ->
+                            val existingNorm = existing.uuid.replace("-", "").lowercase()
+                            val peerNorm = peer.uuid.replace("-", "").lowercase()
+                            val matches = existing.address == peer.address ||
+                                    existingNorm == peerNorm ||
+                                    (existingNorm.length == 16 && peerNorm.startsWith(existingNorm)) ||
+                                    (peerNorm.length == 16 && existingNorm.startsWith(peerNorm))
+                            if (matches) {
+                                found = true
+                                val finalUuid = if (existingNorm.length > 16) existing.uuid else peer.uuid
+                                val smoothedRssi = if (existing.rssi == -100) {
+                                    peer.rssi
+                                } else {
+                                    (0.25 * peer.rssi + 0.75 * existing.rssi).toInt()
+                                }
+                                existing.copy(
+                                    address = peer.address,
+                                    name = peer.name,
+                                    device = peer.device,
+                                    lastSeen = peer.lastSeen,
+                                    uuid = finalUuid,
+                                    hasPasscode = peer.hasPasscode,
+                                    isOfficial = peer.isOfficial,
+                                    rssi = smoothedRssi,
+                                    allowTracking = peer.allowTracking
+                                )
+                            } else {
+                                existing
+                            }
+                        }
+                        val finalResult = if (found) updated else updated + peer
+                        finalResult.sortedWith(compareBy({ it.name.lowercase() }, { it.address }))
                     }
                 }
             } else {
@@ -771,21 +810,28 @@ class BluetoothHandler(private val context: Context) {
             val uuidStr = prefs.getString("user_uuid", "") ?: ""
             val userUuid = if (uuidStr.isNotEmpty()) UUID.fromString(uuidStr) else UUID.randomUUID()
             val uuidBytes = uuidToBytes(userUuid)
+            val shortUuidBytes = uuidBytes.copyOfRange(0, 8)
 
-            val truncatedName = if (displayName.length > 10) displayName.substring(0, 10) else displayName
-            var nameBytes = truncatedName.toByteArray(Charsets.UTF_8)
-            if (nameBytes.size > 10) {
-                nameBytes = nameBytes.copyOfRange(0, 10)
+            var truncatedName = displayName
+            while (truncatedName.toByteArray(Charsets.UTF_8).size > 18) {
+                truncatedName = truncatedName.dropLast(1)
             }
+            val nameBytes = truncatedName.toByteArray(Charsets.UTF_8)
 
             val isPasscode = prefs.getBoolean("is_passcode_enabled", false)
             val isOfficial = false // Will be true in Volunteers Edition copy
-            val passcodeFlag = if (isOfficial) 2.toByte() else if (isPasscode) 1.toByte() else 0.toByte()
+            val isShareLocation = prefs.getBoolean("is_share_location_enabled", false)
+            
+            var passcodeFlagInt = if (isOfficial) 2 else if (isPasscode) 1 else 0
+            if (isShareLocation) {
+                passcodeFlagInt = passcodeFlagInt or 0x04
+            }
+            val passcodeFlag = passcodeFlagInt.toByte()
 
-            val manufacturerData = ByteArray(17 + nameBytes.size)
-            System.arraycopy(uuidBytes, 0, manufacturerData, 0, 16)
-            manufacturerData[16] = passcodeFlag
-            System.arraycopy(nameBytes, 0, manufacturerData, 17, nameBytes.size)
+            val manufacturerData = ByteArray(9 + nameBytes.size)
+            System.arraycopy(shortUuidBytes, 0, manufacturerData, 0, 8)
+            manufacturerData[8] = passcodeFlag
+            System.arraycopy(nameBytes, 0, manufacturerData, 9, nameBytes.size)
 
             val data = AdvertiseData.Builder()
                 .addServiceUuid(ParcelUuid(SERVICE_UUID))
@@ -1380,6 +1426,25 @@ class BluetoothHandler(private val context: Context) {
             }
         }
         return false
+    }
+
+    fun updatePeerUuid(fullUuid: String) {
+        val normalized = fullUuid.replace("-", "").lowercase()
+        val shortUuid = if (normalized.length >= 16) normalized.take(16) else normalized
+        _discoveredPeers.update { current ->
+            current.map { peer ->
+                val peerNorm = peer.uuid.replace("-", "").lowercase()
+                if (peerNorm == shortUuid || peerNorm == normalized) {
+                    peer.copy(uuid = fullUuid)
+                } else {
+                    peer
+                }
+            }
+        }
+    }
+
+    private fun ByteArray.toHexString(): String {
+        return joinToString("") { "%02x".format(it) }
     }
 
     fun cleanUp() {
