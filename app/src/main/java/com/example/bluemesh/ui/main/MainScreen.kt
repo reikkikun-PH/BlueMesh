@@ -53,6 +53,7 @@ fun MainScreen(
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val isAdvertising by viewModel.isAdvertising.collectAsStateWithLifecycle()
     val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
+    var isShareLocationEnabled by remember { mutableStateOf(repository.isShareLocationEnabled()) }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -64,6 +65,7 @@ fun MainScreen(
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
+                    isShareLocationEnabled = repository.isShareLocationEnabled()
                     viewModel.startScanning()
                     if (wasDiscoverableBeforeStop) {
                         viewModel.toggleDiscoverability(true)
@@ -349,6 +351,7 @@ fun MainScreen(
                                 peer = peer,
                                 isPasscodeEnabled = isPasscodeEnabled,
                                 isContact = isContactState,
+                                isLocalShareLocationEnabled = isShareLocationEnabled,
                                 onSaveClick = {
                                     repository.saveContact(peer.uuid, peer.name)
                                     isContactState = true
@@ -370,6 +373,7 @@ fun PeerItem(
     peer: BluetoothPeer,
     isPasscodeEnabled: Boolean,
     isContact: Boolean,
+    isLocalShareLocationEnabled: Boolean,
     onSaveClick: () -> Unit,
     onClick: () -> Unit
 ) {
@@ -413,7 +417,7 @@ fun PeerItem(
                     color = Color(0xFF64748B),
                     fontSize = 13.sp
                 )
-                if (peer.rssi != -100 && peer.allowTracking) {
+                if (peer.rssi != -100 && peer.allowTracking && isLocalShareLocationEnabled) {
                     val dist = peer.estimatedDistance
                     val distFormatted = if (dist < 1.0) "Within 1m" else "Est. " + ((dist * 10).toInt() / 10.0) + "m"
                     Text(
