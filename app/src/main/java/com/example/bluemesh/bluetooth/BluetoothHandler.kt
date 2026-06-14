@@ -67,7 +67,7 @@ class BluetoothHandler(private val context: Context) {
     private val cccdStates = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
     
     private var evictionJob: Job? = null
-    private var scanTimeoutJob: Job? = null
+    private var scanLoopJob: Job? = null
     private var connectionTimeoutJob: Job? = null
     private var isDisconnecting = false
     private var lastScanStartTime: Long = 0
@@ -626,15 +626,45 @@ class BluetoothHandler(private val context: Context) {
         }
     }
 
-    private fun startScanTimeoutTimer() {
-        scanTimeoutJob?.cancel()
-        scanTimeoutJob = scope.launch {
-            delay(20000)
-            if (_isScanning.value) {
-                Log.d(TAG, "scanTimeoutTimer: 20 seconds elapsed, automatically stopping scan.")
-                stopScanning()
-            }
+    private fun startPhysicalScan() {
+        if (!hasPermissions()) return
+        val adapter = bluetoothAdapter
+        if (adapter == null || !adapter.isEnabled) return
+        if (!isLocationEnabled()) return
+        
+        val filters = listOf(
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build(),
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(UUID.fromString(MESH_SERVICE_UUID_STR))).build()
+        )
+
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val isPowerSave = powerManager.isPowerSaveMode
+        val scanMode = if (isPowerSave) ScanSettings.SCAN_MODE_LOW_POWER else ScanSettings.SCAN_MODE_LOW_LATENCY
+
+        val settings = ScanSettings.Builder()
+            .setScanMode(scanMode)
+            .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .build()
+
+        try {
+            Log.d(TAG, "startPhysicalScan: Invoking system BLE scanner")
+            scanner?.startScan(filters, settings, scanCallback)
+            startEvictionTimer()
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception in startPhysicalScan", e)
         }
+    }
+
+    private fun stopPhysicalScan() {
+        try {
+            Log.d(TAG, "stopPhysicalScan: Stopping system BLE scanner")
+            scanner?.stopScan(scanCallback)
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception in stopPhysicalScan", e)
+        }
+        evictionJob?.cancel()
+        evictionJob = null
     }
 
     fun hasPermissions(): Boolean {
@@ -704,51 +734,33 @@ class BluetoothHandler(private val context: Context) {
         }
 
         _discoveredPeers.value = emptyList()
-        val filters = listOf(
-            ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build(),
-            ScanFilter.Builder().setServiceUuid(ParcelUuid(UUID.fromString(MESH_SERVICE_UUID_STR))).build()
-        )
+        _isScanning.value = true
+        lastScanStartTime = System.currentTimeMillis()
 
-        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-        val isPowerSave = powerManager.isPowerSaveMode
-        val scanMode = if (isPowerSave) ScanSettings.SCAN_MODE_LOW_POWER else ScanSettings.SCAN_MODE_LOW_LATENCY
-        Log.d(TAG, "startScanning: isPowerSaveMode=$isPowerSave, using scanMode=$scanMode")
-
-        val settings = ScanSettings.Builder()
-            .setScanMode(scanMode)
-            .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
-            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-            .build()
-
-        try {
-            Log.d(TAG, "startScanning: Invoking system BLE scanner")
-            scanner?.startScan(filters, settings, scanCallback)
-            _isScanning.value = true
-            lastScanStartTime = System.currentTimeMillis()
-            startEvictionTimer()
-            startScanTimeoutTimer()
-            Log.i(TAG, "startScanning: System BLE scanner started")
-        } catch (e: Exception) {
-            Log.e(TAG, "startScanning: Exception starting BLE scan", e)
-            _isScanning.value = false
-            showToast("Failed to start scanning: ${e.localizedMessage}")
+        scanLoopJob?.cancel()
+        scanLoopJob = scope.launch {
+            try {
+                while (true) {
+                    startPhysicalScan()
+                    delay(12000) // Scan for 12 seconds
+                    stopPhysicalScan()
+                    delay(4000)  // Pause for 4 seconds
+                }
+            } finally {
+                stopPhysicalScan()
+            }
         }
+        Log.i(TAG, "startScanning: BLE scanning loop started")
     }
 
     fun stopScanning() {
         Log.d(TAG, "stopScanning: Request received")
-        if (!hasPermissions() || !_isScanning.value) return
-        try {
-            scanner?.stopScan(scanCallback)
-            _isScanning.value = false
-            Log.i(TAG, "stopScanning: BLE Scanner stopped successfully")
-        } catch (e: Exception) {
-            Log.e(TAG, "stopScanning: Exception stopping BLE scan", e)
-        }
-        evictionJob?.cancel()
-        evictionJob = null
-        scanTimeoutJob?.cancel()
-        scanTimeoutJob = null
+        if (!_isScanning.value) return
+        _isScanning.value = false
+        scanLoopJob?.cancel()
+        scanLoopJob = null
+        stopPhysicalScan()
+        Log.i(TAG, "stopScanning: BLE scanning loop stopped")
     }
 
     fun startAdvertising(displayName: String) {

@@ -13,8 +13,8 @@ android {
         applicationId = "com.example.bluemesh"
         minSdk = 24
         targetSdk = 36
-        versionCode = 7
-        versionName = "26.9"
+        versionCode = 8
+        versionName = "27.0"
     }
 
     val keystorePropertiesFile = file("C:/Users/Ricky/Desktop/BlueMesh Creds/keystore.properties")
