@@ -153,7 +153,12 @@ fun MainScreen(
                     selected = false,
                     onClick = {
                         scope.launch { drawerState.close() }
-                        Toast.makeText(context, "BlueMesh v26.4 — Offline Bluetooth Chat", Toast.LENGTH_SHORT).show()
+                        try {
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://reikkikun-ph.github.io/BlueMesh-Website/"))
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "Cannot open browser: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                        }
                     },
                     colors = NavigationDrawerItemDefaults.colors(
                         unselectedContainerColor = Color.Transparent
