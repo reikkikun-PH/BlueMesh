@@ -22,14 +22,9 @@ import kotlinx.coroutines.launch
 class DefaultDataRepository private constructor(context: Context) : DataRepository {
 
     companion object {
-        @Volatile
-        private var INSTANCE: DefaultDataRepository? = null
-
-        fun getInstance(context: Context): DefaultDataRepository {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: DefaultDataRepository(context.applicationContext).also { INSTANCE = it }
-            }
-        }
+        @Volatile private var INSTANCE: DefaultDataRepository? = null
+        fun getInstance(context: Context): DefaultDataRepository =
+            INSTANCE ?: synchronized(this) { INSTANCE ?: DefaultDataRepository(context.applicationContext).also { INSTANCE = it } }
     }
 
     private val prefs = context.getSharedPreferences("bluemesh_prefs", Context.MODE_PRIVATE)
@@ -41,11 +36,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
     private var myKeyPair: java.security.KeyPair? = null
     private val lastConnectionAttempts = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    private data class ProcessedMessageEntry(
-        val senderUuid: String,
-        val text: String,
-        val timestamp: Long
-    )
+    private data class ProcessedMessageEntry(val senderUuid: String, val text: String, val timestamp: Long)
     private val processedMessagesCache = java.util.Collections.synchronizedList(mutableListOf<ProcessedMessageEntry>())
     private val PROCESSED_CACHE_MAX_SIZE = 50
 
@@ -53,13 +44,9 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
         val now = System.currentTimeMillis()
         synchronized(processedMessagesCache) {
             processedMessagesCache.removeAll { now - it.timestamp > 8000 }
-            if (processedMessagesCache.any { it.senderUuid == senderUuid && it.text == text }) {
-                return true
-            }
+            if (processedMessagesCache.any { it.senderUuid == senderUuid && it.text == text }) return true
             processedMessagesCache.add(ProcessedMessageEntry(senderUuid, text, now))
-            if (processedMessagesCache.size > PROCESSED_CACHE_MAX_SIZE) {
-                processedMessagesCache.removeAt(0)
-            }
+            if (processedMessagesCache.size > PROCESSED_CACHE_MAX_SIZE) processedMessagesCache.removeAt(0)
             return false
         }
     }
@@ -74,43 +61,31 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
     override val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
 
     init {
-        val isPasscode = isPasscodeEnabled()
-        if (isPasscode) {
-            val uuidStr = prefs.getString("user_uuid", "") ?: ""
-            if (uuidStr.isEmpty()) {
+        if (isPasscodeEnabled()) {
+            if (getUserUuid().isEmpty()) {
                 prefs.edit().putString("user_uuid", UUID.randomUUID().toString()).apply()
             }
         } else {
-            // Non-password user: generate a new temporary random UUID on every launch (disposable ID)
             prefs.edit().putString("user_uuid", UUID.randomUUID().toString()).apply()
         }
 
-        // Load session keys from database
         scope.launch {
             try {
                 for (contact in dbHelper.getContactsList()) {
-                    val keyHex = dbHelper.getSessionKey(contact.first)
-                    if (keyHex != null && keyHex.isNotEmpty()) {
-                        sessionKeys[contact.first] = keyHex.hexToBytes()
-                        Log.i("DataRepository", "Loaded session key for contact ${contact.first}")
+                    dbHelper.getSessionKey(contact.first)?.let {
+                        if (it.isNotEmpty()) sessionKeys[contact.first] = it.hexToBytes()
                     }
                 }
             } catch (e: Exception) {
-                Log.e("DataRepository", "Error loading session keys from DB", e)
+                Log.e("DataRepository", "Error loading session keys", e)
             }
         }
 
         bluetoothHandler.onPeerReadyCallback = { peerUuid ->
             scope.launch {
-                if (myKeyPair == null) {
-                    myKeyPair = CryptoUtils.generateECKeyPair()
-                }
-                val myKeyPairObj = myKeyPair
-                if (myKeyPairObj != null) {
-                    val pubKeyBytes = myKeyPairObj.public.encoded
-                    val myUuid = getUserUuid()
-                    Log.i("DataRepository", "Initiating key exchange with $peerUuid. Sending public key (${pubKeyBytes.size} bytes)")
-                    bluetoothHandler.sendPublicKey(myUuid, pubKeyBytes)
+                if (myKeyPair == null) myKeyPair = CryptoUtils.generateECKeyPair()
+                myKeyPair?.let {
+                    bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded)
                 }
                 sendPendingMessages(peerUuid)
             }
@@ -127,24 +102,17 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                 }
             }
             scope.launch {
-                Log.i("DataRepository", "Received public key from $senderUuid (${peerPublicKeyBytes.size} bytes)")
-                if (myKeyPair == null) {
-                    myKeyPair = CryptoUtils.generateECKeyPair()
-                }
-                val myKeyPairObj = myKeyPair
-                if (myKeyPairObj != null) {
+                if (myKeyPair == null) myKeyPair = CryptoUtils.generateECKeyPair()
+                myKeyPair?.let {
                     try {
-                          val sharedSecret = CryptoUtils.generateSharedSecret(myKeyPairObj.private, peerPublicKeyBytes)
-                          val aesKey = CryptoUtils.deriveAESKey(sharedSecret)
-                          sessionKeys[senderUuid] = aesKey
-                          if (isPasscodeEnabled()) {
-                              dbHelper.saveSessionKey(senderUuid, aesKey.toHex())
-                          }
-                          Log.i("DataRepository", "Successfully negotiated E2EE session key for peer $senderUuid")
-                          sendPendingMessages(senderUuid)
-                      } catch (e: Exception) {
-                          Log.e("DataRepository", "Failed to compute shared secret for $senderUuid", e)
-                      }
+                        val secret = CryptoUtils.generateSharedSecret(it.private, peerPublicKeyBytes)
+                        val aesKey = CryptoUtils.deriveAESKey(secret)
+                        sessionKeys[senderUuid] = aesKey
+                        if (isPasscodeEnabled()) dbHelper.saveSessionKey(senderUuid, aesKey.toHex())
+                        sendPendingMessages(senderUuid)
+                    } catch (e: Exception) {
+                        Log.e("DataRepository", "Failed shared secret computation", e)
+                    }
                 }
             }
         }
@@ -156,74 +124,49 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                 
                 val senderUuid = if (message.senderHash != null) {
                     val myUuidHash = getUserUuid().hashCode()
-                    if (message.recipientHash != myUuidHash && message.recipientHash != 0) {
-                        Log.d("DataRepository", "Mesh: Dropped message because recipient hash ${message.recipientHash} did not match my hash $myUuidHash")
-                        return@collect
-                    }
+                    if (message.recipientHash != myUuidHash && message.recipientHash != 0) return@collect
                     val resolved = if (activeChatUuid.isNotEmpty() && (activeChatUuid.hashCode() == message.senderHash || (activeChatUuid.startsWith("mesh_") && activeChatUuid.substringAfter("mesh_").toIntOrNull() == message.senderHash))) {
                         activeChatUuid
                     } else {
                         getContacts().find { it.uuid.hashCode() == message.senderHash }?.uuid
                             ?: bluetoothHandler.discoveredPeers.value.find { it.uuid.hashCode() == message.senderHash }?.uuid
                     }
-                    
-                    if (resolved != null) {
-                        resolved
-                    } else {
-                        val tempUuid = "mesh_${message.senderHash}"
-                        if (isPasscodeEnabled()) {
-                            if (!isContact(tempUuid)) {
-                                saveContact(tempUuid, "Mesh Peer ${message.senderHash.toLong() and 0xFFFFFFFFL}")
-                            }
+                    resolved ?: "mesh_${message.senderHash}".also { tempUuid ->
+                        if (isPasscodeEnabled() && !isContact(tempUuid)) {
+                            saveContact(tempUuid, "Mesh Peer ${message.senderHash.toLong() and 0xFFFFFFFFL}")
                         }
-                        tempUuid
                     }
                 } else {
                     peer?.uuid ?: activeChatUuid
                 }
 
                 val textBytes = message.text.toByteArray(Charsets.ISO_8859_1)
-                var msgTimestamp = message.timestamp // fallback to receipt time
+                var msgTimestamp = message.timestamp
                 var finalMessageText = ""
 
-                var isEncrypted = false
-                if (textBytes.size >= 4) {
-                    val buffer = ByteBuffer.wrap(textBytes, 0, 4)
-                    buffer.order(ByteOrder.BIG_ENDIAN)
-                    val messageId = buffer.int
-                    isEncrypted = (messageId and java.lang.Integer.MIN_VALUE) != 0
-                }
+                val isEncrypted = textBytes.size >= 4 && (ByteBuffer.wrap(textBytes, 0, 4).apply { order(ByteOrder.BIG_ENDIAN) }.int and java.lang.Integer.MIN_VALUE) != 0
 
                 if (isEncrypted) {
                     val sessionKey = sessionKeys[senderUuid]
                     if (sessionKey != null) {
                         try {
                             val messageId = ByteBuffer.wrap(textBytes, 0, 4).apply { order(ByteOrder.BIG_ENDIAN) }.int
-                            val ciphertextBytes = textBytes.copyOfRange(4, textBytes.size)
-                            val decryptedBytes = CryptoUtils.encryptDecryptXOR(ciphertextBytes, sessionKey, messageId)
-                            
-                            if (decryptedBytes.size >= 8) {
-                                val decBuffer = ByteBuffer.wrap(decryptedBytes)
-                                msgTimestamp = decBuffer.long
-                                finalMessageText = String(decryptedBytes, 8, decryptedBytes.size - 8, Charsets.UTF_8)
-                                Log.i("DataRepository", "E2EE: Decrypted message with timestamp $msgTimestamp: $finalMessageText")
+                            val decrypted = CryptoUtils.encryptDecryptXOR(textBytes.copyOfRange(4, textBytes.size), sessionKey, messageId)
+                            if (decrypted.size >= 8) {
+                                msgTimestamp = ByteBuffer.wrap(decrypted).long
+                                finalMessageText = String(decrypted, 8, decrypted.size - 8, Charsets.UTF_8)
                             } else {
-                                finalMessageText = String(decryptedBytes, Charsets.UTF_8)
-                                Log.w("DataRepository", "E2EE: Decrypted message too short for timestamp prefix")
+                                finalMessageText = String(decrypted, Charsets.UTF_8)
                             }
                         } catch (e: Exception) {
-                            Log.e("DataRepository", "E2EE: Failed decryption attempt", e)
                             finalMessageText = "[Encrypted Message — Decryption Error]"
                         }
                     } else {
-                        Log.w("DataRepository", "E2EE: Received encrypted message from $senderUuid but no session key exists")
                         finalMessageText = "[Encrypted Message — Pair to Decrypt]"
                     }
                 } else {
-                    // Plaintext message
                     if (textBytes.size >= 8) {
-                        val buffer = ByteBuffer.wrap(textBytes)
-                        msgTimestamp = buffer.long
+                        msgTimestamp = ByteBuffer.wrap(textBytes).long
                         finalMessageText = String(textBytes, 8, textBytes.size - 8, Charsets.UTF_8)
                     } else {
                         finalMessageText = String(textBytes, Charsets.UTF_8)
@@ -231,10 +174,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                 }
 
                 if (senderUuid.isNotEmpty() && !message.isFromMe) {
-                    if (isDuplicateMessageContent(senderUuid, finalMessageText)) {
-                        Log.d("DataRepository", "Deduplication: Discarded duplicate message: $finalMessageText")
-                        return@collect
-                    }
+                    if (isDuplicateMessageContent(senderUuid, finalMessageText)) return@collect
                 }
 
                 if (isPasscodeEnabled() && senderUuid.isNotEmpty() && !message.isFromMe) {
@@ -242,8 +182,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                 }
 
                 if (senderUuid == activeChatUuid && !message.isFromMe) {
-                    val displayMessage = message.copy(text = finalMessageText, timestamp = msgTimestamp)
-                    _chatMessages.update { current -> current + displayMessage }
+                    _chatMessages.update { current -> current + message.copy(text = finalMessageText, timestamp = msgTimestamp) }
                 }
             }
         }
@@ -251,11 +190,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
         scope.launch {
             bluetoothHandler.connectionStatus.collect { status ->
                 if (status == ConnectionStatus.DISCONNECTED) {
-                    if (activeChatUuid.isNotEmpty() && isPasscodeEnabled()) {
-                        _chatMessages.value = dbHelper.getMessagesForContact(activeChatUuid)
-                    } else {
-                        _chatMessages.value = emptyList()
-                    }
+                    _chatMessages.value = if (activeChatUuid.isNotEmpty() && isPasscodeEnabled()) dbHelper.getMessagesForContact(activeChatUuid) else emptyList()
                 }
             }
         }
@@ -265,41 +200,33 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                 if (isPasscodeEnabled()) {
                     for (peer in peers) {
                         if (isContact(peer.uuid)) {
-                            val storedContact = getContacts().find { 
-                                val storedNorm = it.uuid.replace("-", "").lowercase()
-                                val peerNorm = peer.uuid.replace("-", "").lowercase()
-                                storedNorm == peerNorm || (peerNorm.length == 16 && storedNorm.startsWith(peerNorm)) || (storedNorm.length == 16 && peerNorm.startsWith(storedNorm))
+                            val stored = getContacts().find {
+                                val s = it.uuid.replace("-", "").lowercase()
+                                val p = peer.uuid.replace("-", "").lowercase()
+                                s == p || (p.length == 16 && s.startsWith(p)) || (s.length == 16 && p.startsWith(s))
                             }
-                            if (storedContact != null) {
-                                val storedNorm = storedContact.uuid.replace("-", "").lowercase()
-                                val peerNorm = peer.uuid.replace("-", "").lowercase()
-                                if (storedNorm.length == 16 && peerNorm.length > 16) {
-                                    dbHelper.deleteContact(storedContact.uuid)
+                            if (stored != null) {
+                                val sNorm = stored.uuid.replace("-", "").lowercase()
+                                val pNorm = peer.uuid.replace("-", "").lowercase()
+                                if (sNorm.length == 16 && pNorm.length > 16) {
+                                    dbHelper.deleteContact(stored.uuid)
                                     saveContact(peer.uuid, peer.name)
-                                    Log.i("DataRepository", "Contact sync: Migrated contact ${storedContact.uuid} to full UUID ${peer.uuid}")
-                                } else if (storedContact.name != peer.name || storedContact.isOfficial != peer.isOfficial) {
-                                    Log.i("DataRepository", "Contact sync: Discovered name/official update for contact ${storedContact.uuid}: '${storedContact.name}' -> '${peer.name}', official: ${storedContact.isOfficial} -> ${peer.isOfficial}")
-                                    saveContact(storedContact.uuid, peer.name)
+                                } else if (stored.name != peer.name || stored.isOfficial != peer.isOfficial) {
+                                    saveContact(stored.uuid, peer.name)
                                 }
                             }
                         }
                     }
                 }
 
-                // Auto-connect to contacts with pending messages
                 if (isPasscodeEnabled() && connectionStatus.value == ConnectionStatus.DISCONNECTED) {
                     for (peer in peers) {
-                        if (isContact(peer.uuid)) {
-                            val pending = dbHelper.getPendingMessages(peer.uuid)
-                            if (pending.isNotEmpty()) {
-                                val lastAttempt = lastConnectionAttempts[peer.uuid] ?: 0L
-                                val now = System.currentTimeMillis()
-                                if (now - lastAttempt > 15000) {
-                                    lastConnectionAttempts[peer.uuid] = now
-                                    Log.i("DataRepository", "Auto-connecting to contact ${peer.uuid} (${peer.name}) to send ${pending.size} pending messages")
-                                    connectToPeerByUuid(peer.uuid)
-                                    break
-                                }
+                        if (isContact(peer.uuid) && dbHelper.getPendingMessages(peer.uuid).isNotEmpty()) {
+                            val lastAttempt = lastConnectionAttempts[peer.uuid] ?: 0L
+                            if (System.currentTimeMillis() - lastAttempt > 15000) {
+                                lastConnectionAttempts[peer.uuid] = System.currentTimeMillis()
+                                connectToPeerByUuid(peer.uuid)
+                                break
                             }
                         }
                     }
@@ -308,79 +235,45 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
         }
     }
 
-    override fun startScan() {
-        bluetoothHandler.startScanning()
-    }
-
-    override fun stopScan() {
-        bluetoothHandler.stopScanning()
-    }
-
-    override fun startAdvertising(name: String) {
-        bluetoothHandler.startAdvertising(name)
-    }
-
-    override fun stopAdvertising() {
-        bluetoothHandler.stopAdvertising()
-    }
-
-    override fun connectToPeer(device: BluetoothDevice) {
-        bluetoothHandler.connectToPeer(device)
-    }
-
-    override fun disconnect() {
-        bluetoothHandler.disconnect()
-    }
+    override fun startScan() = bluetoothHandler.startScanning()
+    override fun stopScan() = bluetoothHandler.stopScanning()
+    override fun startAdvertising(name: String) = bluetoothHandler.startAdvertising(name)
+    override fun stopAdvertising() = bluetoothHandler.stopAdvertising()
+    override fun connectToPeer(device: BluetoothDevice) = bluetoothHandler.connectToPeer(device)
+    override fun disconnect() = bluetoothHandler.disconnect()
 
     override fun sendMessage(text: String): Boolean {
         if (activeChatUuid.isEmpty()) return false
         val timestamp = System.currentTimeMillis()
         val peer = bluetoothHandler.discoveredPeers.value.find { it.uuid == activeChatUuid }
         val sessionKey = sessionKeys[activeChatUuid]
-
-        val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt() // Ensure MSB is 0 initially
-        var sentSuccessfully = false
+        val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
+        var sent = false
 
         if (sessionKey != null) {
-            // Encrypt the message!
             val plaintextBytes = BluetoothHandler.encodePayload(timestamp, text)
             val encryptedBytes = CryptoUtils.encryptDecryptXOR(plaintextBytes, sessionKey, messageId or java.lang.Integer.MIN_VALUE)
             val encryptedTextLatin1 = String(encryptedBytes, Charsets.ISO_8859_1)
             
-            Log.i("DataRepository", "E2EE: Encrypting and sending message to $activeChatUuid. Message ID = $messageId")
-
-            val senderUuid = getUserUuid()
-            val recipientUuid = activeChatUuid
-            bluetoothHandler.advertiseMeshMessage(messageId or java.lang.Integer.MIN_VALUE, senderUuid, recipientUuid, encryptedTextLatin1)
-
+            bluetoothHandler.advertiseMeshMessage(messageId or java.lang.Integer.MIN_VALUE, getUserUuid(), activeChatUuid, encryptedTextLatin1)
             if (peer != null && bluetoothHandler.isReady.value) {
-                sentSuccessfully = bluetoothHandler.sendMessageEncrypted(encryptedBytes, messageId)
+                sent = bluetoothHandler.sendMessageEncrypted(encryptedBytes, messageId)
             }
         } else {
-            Log.i("DataRepository", "E2EE: No session key found for $activeChatUuid. Sending plain text.")
-            val senderUuid = getUserUuid()
-            val recipientUuid = activeChatUuid
-            bluetoothHandler.advertiseMeshMessage(messageId, senderUuid, recipientUuid, text)
-
+            bluetoothHandler.advertiseMeshMessage(messageId, getUserUuid(), activeChatUuid, text)
             if (peer != null && bluetoothHandler.isReady.value) {
-                val plaintextBytes = BluetoothHandler.encodePayload(timestamp, text)
-                sentSuccessfully = bluetoothHandler.sendMessage(plaintextBytes)
+                sent = bluetoothHandler.sendMessage(BluetoothHandler.encodePayload(timestamp, text))
             }
         }
 
-        val status = if (sentSuccessfully) "SENT" else "PENDING"
-
-        // Save to DB only if passcode is enabled
         if (isPasscodeEnabled()) {
-            dbHelper.insertMessage(activeChatUuid, text, timestamp, status, true)
+            dbHelper.insertMessage(activeChatUuid, text, timestamp, if (sent) "SENT" else "PENDING", true)
         }
-        _chatMessages.update { current -> current + ChatMessage(text, true, timestamp, status) }
+        _chatMessages.update { current -> current + ChatMessage(text, true, timestamp, if (sent) "SENT" else "PENDING") }
         return true
     }
 
-    override fun getDisplayName(): String {
-        return prefs.getString("display_name", "") ?: ""
-    }
+    override fun getDisplayName(): String = prefs.getString("display_name", "") ?: ""
 
     override fun saveDisplayName(name: String) {
         prefs.edit().putString("display_name", name).apply()
@@ -393,31 +286,24 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
     override fun clearChatHistory() {
         _chatMessages.value = emptyList()
         if (activeChatUuid.isNotEmpty()) {
-            val db = dbHelper.writableDatabase
-            db.delete("QueuedMessages", "contact_uuid = ?", arrayOf(activeChatUuid))
+            dbHelper.writableDatabase.delete("QueuedMessages", "contact_uuid = ?", arrayOf(activeChatUuid))
         }
     }
 
-    override fun getUserUuid(): String {
-        return prefs.getString("user_uuid", "") ?: ""
-    }
+    override fun getUserUuid(): String = prefs.getString("user_uuid", "") ?: ""
 
     override fun getContacts(): List<BluetoothPeer> {
         val list = if (isPasscodeEnabled()) dbHelper.getContactsList() else emptyList()
         val currentDiscovered = bluetoothHandler.discoveredPeers.value
         return list.map { (uuid, name, isOfficialDb) ->
             val discoveredPeer = currentDiscovered.find {
-                val storedNorm = uuid.replace("-", "").lowercase()
-                val peerNorm = it.uuid.replace("-", "").lowercase()
-                storedNorm == peerNorm || (peerNorm.length == 16 && storedNorm.startsWith(peerNorm)) || (storedNorm.length == 16 && peerNorm.startsWith(storedNorm))
+                val s = uuid.replace("-", "").lowercase()
+                val p = it.uuid.replace("-", "").lowercase()
+                s == p || (p.length == 16 && s.startsWith(p)) || (s.length == 16 && p.startsWith(s))
             }
-            val address = discoveredPeer?.address ?: ""
             BluetoothPeer(
-                address = address,
-                name = name,
-                device = discoveredPeer?.device,
-                lastSeen = discoveredPeer?.lastSeen ?: 0L,
-                uuid = uuid,
+                address = discoveredPeer?.address ?: "", name = name, device = discoveredPeer?.device,
+                lastSeen = discoveredPeer?.lastSeen ?: 0L, uuid = uuid,
                 hasPasscode = discoveredPeer?.hasPasscode ?: isOfficialDb,
                 isOfficial = isOfficialDb || (discoveredPeer?.isOfficial == true)
             )
@@ -426,16 +312,14 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
 
     override fun saveContact(uuid: String, name: String) {
         val isOfficial = bluetoothHandler.discoveredPeers.value.find {
-            val storedNorm = uuid.replace("-", "").lowercase()
-            val peerNorm = it.uuid.replace("-", "").lowercase()
-            storedNorm == peerNorm || (peerNorm.length == 16 && storedNorm.startsWith(peerNorm)) || (storedNorm.length == 16 && peerNorm.startsWith(storedNorm))
+            val s = uuid.replace("-", "").lowercase()
+            val p = it.uuid.replace("-", "").lowercase()
+            s == p || (p.length == 16 && s.startsWith(p)) || (s.length == 16 && p.startsWith(s))
         }?.isOfficial ?: false
         dbHelper.saveContact(uuid, name, isOfficial)
     }
 
-    override fun deleteContact(uuid: String) {
-        dbHelper.deleteContact(uuid)
-    }
+    override fun deleteContact(uuid: String) = dbHelper.deleteContact(uuid)
 
     override fun isContact(uuid: String): Boolean {
         if (dbHelper.isContact(uuid)) return true
@@ -448,31 +332,20 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
 
     override fun setActiveChat(uuid: String) {
         activeChatUuid = uuid
-        _chatMessages.value = if (isPasscodeEnabled()) {
-            dbHelper.getMessagesForContact(uuid)
-        } else {
-            emptyList()
-        }
+        _chatMessages.value = if (isPasscodeEnabled()) dbHelper.getMessagesForContact(uuid) else emptyList()
     }
 
     override fun connectToPeerByUuid(uuid: String) {
-        val peer = bluetoothHandler.discoveredPeers.value.find { it.uuid == uuid }
-        if (peer != null && peer.device != null) {
-            bluetoothHandler.connectToPeer(peer.device)
+        bluetoothHandler.discoveredPeers.value.find { it.uuid == uuid }?.device?.let {
+            bluetoothHandler.connectToPeer(it)
         }
     }
 
     private fun sendPendingMessages(peerUuid: String) {
         val pending = dbHelper.getPendingMessages(peerUuid)
         if (pending.isEmpty()) return
-
         val sessionKey = sessionKeys[peerUuid]
-        if (isContact(peerUuid) && sessionKey == null) {
-            Log.d("DataRepository", "sendPendingMessages: Contact $peerUuid has pending messages but no E2EE key yet, waiting for exchange.")
-            return
-        }
-
-        Log.d("DataRepository", "Found ${pending.size} pending messages for $peerUuid. Sending sequentially...")
+        if (isContact(peerUuid) && sessionKey == null) return
 
         for (msg in pending) {
             val success = if (sessionKey != null) {
@@ -481,91 +354,64 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                 val encryptedBytes = CryptoUtils.encryptDecryptXOR(plaintextBytes, sessionKey, messageId or java.lang.Integer.MIN_VALUE)
                 bluetoothHandler.sendMessageEncrypted(encryptedBytes, messageId)
             } else {
-                val plaintextBytes = BluetoothHandler.encodePayload(msg.third, msg.second)
-                bluetoothHandler.sendMessage(plaintextBytes)
+                bluetoothHandler.sendMessage(BluetoothHandler.encodePayload(msg.third, msg.second))
             }
             if (success) {
                 dbHelper.markMessageAsSent(msg.first)
                 if (peerUuid == activeChatUuid) {
                     _chatMessages.update { current ->
-                        current.map {
-                            if (it.text == msg.second && it.status == "PENDING") {
-                                it.copy(status = "SENT")
-                            } else {
-                                it
-                            }
-                        }
+                        current.map { if (it.text == msg.second && it.status == "PENDING") it.copy(status = "SENT") else it }
                     }
                 }
-            } else {
-                Log.e("DataRepository", "Failed to send pending message ID ${msg.first}. Aborting queue.")
-                return
-            }
+            } else return
         }
     }
 
-    override fun isPasscodeEnabled(): Boolean {
-        return prefs.getBoolean("is_passcode_enabled", false)
-    }
+    override fun isPasscodeEnabled(): Boolean = prefs.getBoolean("is_passcode_enabled", false)
 
     override fun savePasscode(pin: String) {
-        val hash = hashPin(pin)
-        val newLockedUuid = UUID.randomUUID().toString()
-        prefs.edit()
-            .putString("passcode_hash", hash)
-            .putBoolean("is_passcode_enabled", true)
-            .putString("user_uuid", newLockedUuid)
-            .apply()
-            
-        val name = getDisplayName()
-        if (name.isNotEmpty()) {
-            bluetoothHandler.stopAdvertising()
-            bluetoothHandler.startAdvertising(name)
+        prefs.edit().putString("passcode_hash", hashPin(pin)).putBoolean("is_passcode_enabled", true)
+            .putString("user_uuid", UUID.randomUUID().toString()).apply()
+        getDisplayName().let {
+            if (it.isNotEmpty()) {
+                bluetoothHandler.stopAdvertising()
+                bluetoothHandler.startAdvertising(it)
+            }
         }
     }
 
     override fun verifyPasscode(pin: String): Boolean {
         val savedHash = prefs.getString("passcode_hash", "") ?: ""
-        if (savedHash.isEmpty()) return false
-        return hashPin(pin) == savedHash
+        return savedHash.isNotEmpty() && hashPin(pin) == savedHash
     }
 
     override fun disablePasscode() {
-        prefs.edit()
-            .remove("passcode_hash")
-            .putBoolean("is_passcode_enabled", false)
-            .putString("user_uuid", UUID.randomUUID().toString())
-            .apply()
-            
-        val name = getDisplayName()
-        if (name.isNotEmpty()) {
-            bluetoothHandler.stopAdvertising()
-            bluetoothHandler.startAdvertising(name)
+        prefs.edit().remove("passcode_hash").putBoolean("is_passcode_enabled", false)
+            .putString("user_uuid", UUID.randomUUID().toString()).apply()
+        getDisplayName().let {
+            if (it.isNotEmpty()) {
+                bluetoothHandler.stopAdvertising()
+                bluetoothHandler.startAdvertising(it)
+            }
         }
     }
 
-    override fun isShareLocationEnabled(): Boolean {
-        return prefs.getBoolean("is_share_location_enabled", false)
-    }
+    override fun isShareLocationEnabled(): Boolean = prefs.getBoolean("is_share_location_enabled", false)
 
     override fun setShareLocationEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("is_share_location_enabled", enabled).apply()
-        val name = getDisplayName()
-        if (name.isNotEmpty()) {
-            bluetoothHandler.stopAdvertising()
-            bluetoothHandler.startAdvertising(name)
+        getDisplayName().let {
+            if (it.isNotEmpty()) {
+                bluetoothHandler.stopAdvertising()
+                bluetoothHandler.startAdvertising(it)
+            }
         }
     }
 
-    private fun hashPin(pin: String): String {
-        return try {
-            val digest = MessageDigest.getInstance("SHA-256")
-            val hashBytes = digest.digest(pin.toByteArray(Charsets.UTF_8))
-            hashBytes.joinToString("") { String.format("%02x", it) }
-        } catch (e: Exception) {
-            ""
-        }
-    }
+    private fun hashPin(pin: String): String = try {
+        val digest = MessageDigest.getInstance("SHA-256")
+        digest.digest(pin.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    } catch (e: Exception) { "" }
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
     private fun String.hexToBytes(): ByteArray {
