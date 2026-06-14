@@ -762,9 +762,9 @@ class BluetoothHandler(private val context: Context) {
             try {
                 while (true) {
                     startPhysicalScan()
-                    delay(12000) // Scan for 12 seconds
+                    delay(300000) // Scan for 5 minutes
                     stopPhysicalScan()
-                    delay(4000)  // Pause for 4 seconds
+                    delay(100)    // 100ms pause to restart and bypass Android's 30-min limitation
                 }
             } finally {
                 stopPhysicalScan()
