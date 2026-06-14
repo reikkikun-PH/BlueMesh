@@ -59,7 +59,6 @@ fun MainScreen(
     val scope = rememberCoroutineScope()
 
     val lifecycleOwner = LocalLifecycleOwner.current
-    var wasDiscoverableBeforeStop by remember { mutableStateOf(true) }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -67,14 +66,6 @@ fun MainScreen(
                 Lifecycle.Event.ON_RESUME -> {
                     isShareLocationEnabled = repository.isShareLocationEnabled()
                     viewModel.startScanning()
-                    if (wasDiscoverableBeforeStop) {
-                        viewModel.toggleDiscoverability(true)
-                    }
-                }
-                Lifecycle.Event.ON_STOP -> {
-                    wasDiscoverableBeforeStop = isAdvertising
-                    viewModel.stopScanning()
-                    viewModel.toggleDiscoverability(false)
                 }
                 else -> {}
             }
@@ -82,7 +73,6 @@ fun MainScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            viewModel.stopScanning()
         }
     }
 

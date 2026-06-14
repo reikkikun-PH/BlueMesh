@@ -74,7 +74,6 @@ fun ChatScreen(
                 }
                 Lifecycle.Event.ON_STOP -> {
                     viewModel.disconnect()
-                    viewModel.stopScan()
                 }
                 else -> {}
             }
@@ -83,7 +82,6 @@ fun ChatScreen(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             viewModel.disconnect()
-            viewModel.stopScan()
         }
     }
 
