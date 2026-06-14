@@ -39,6 +39,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
     private var activeChatUuid: String = ""
     private val sessionKeys = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
     private var myKeyPair: java.security.KeyPair? = null
+    private val lastConnectionAttempts = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     private data class ProcessedMessageEntry(
         val senderUuid: String,
@@ -140,6 +141,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                               dbHelper.saveSessionKey(senderUuid, aesKey.toHex())
                           }
                           Log.i("DataRepository", "Successfully negotiated E2EE session key for peer $senderUuid")
+                          sendPendingMessages(senderUuid)
                       } catch (e: Exception) {
                           Log.e("DataRepository", "Failed to compute shared secret for $senderUuid", e)
                       }
@@ -180,32 +182,53 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                     peer?.uuid ?: activeChatUuid
                 }
 
-                var decryptedText: String? = null
-                try {
-                    val textBytes = message.text.toByteArray(Charsets.ISO_8859_1)
-                    if (textBytes.size >= 4) {
-                        val buffer = ByteBuffer.wrap(textBytes, 0, 4)
-                        buffer.order(ByteOrder.BIG_ENDIAN)
-                        val messageId = buffer.int
-                        val isEncrypted = (messageId and java.lang.Integer.MIN_VALUE) != 0
-                        if (isEncrypted) {
-                            val sessionKey = sessionKeys[senderUuid]
-                            if (sessionKey != null) {
-                                val ciphertextBytes = textBytes.copyOfRange(4, textBytes.size)
-                                val decryptedBytes = CryptoUtils.encryptDecryptXOR(ciphertextBytes, sessionKey, messageId)
-                                decryptedText = String(decryptedBytes, Charsets.UTF_8)
-                                Log.i("DataRepository", "E2EE: Successfully decrypted message from $senderUuid")
-                            } else {
-                                Log.w("DataRepository", "E2EE: Received encrypted message from $senderUuid but no session key exists")
-                                decryptedText = "[Encrypted Message — Pair to Decrypt]"
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e("DataRepository", "E2EE: Failed decryption attempt", e)
+                val textBytes = message.text.toByteArray(Charsets.ISO_8859_1)
+                var msgTimestamp = message.timestamp // fallback to receipt time
+                var finalMessageText = ""
+
+                var isEncrypted = false
+                if (textBytes.size >= 4) {
+                    val buffer = ByteBuffer.wrap(textBytes, 0, 4)
+                    buffer.order(ByteOrder.BIG_ENDIAN)
+                    val messageId = buffer.int
+                    isEncrypted = (messageId and java.lang.Integer.MIN_VALUE) != 0
                 }
 
-                val finalMessageText = decryptedText ?: message.text
+                if (isEncrypted) {
+                    val sessionKey = sessionKeys[senderUuid]
+                    if (sessionKey != null) {
+                        try {
+                            val messageId = ByteBuffer.wrap(textBytes, 0, 4).apply { order(ByteOrder.BIG_ENDIAN) }.int
+                            val ciphertextBytes = textBytes.copyOfRange(4, textBytes.size)
+                            val decryptedBytes = CryptoUtils.encryptDecryptXOR(ciphertextBytes, sessionKey, messageId)
+                            
+                            if (decryptedBytes.size >= 8) {
+                                val decBuffer = ByteBuffer.wrap(decryptedBytes)
+                                msgTimestamp = decBuffer.long
+                                finalMessageText = String(decryptedBytes, 8, decryptedBytes.size - 8, Charsets.UTF_8)
+                                Log.i("DataRepository", "E2EE: Decrypted message with timestamp $msgTimestamp: $finalMessageText")
+                            } else {
+                                finalMessageText = String(decryptedBytes, Charsets.UTF_8)
+                                Log.w("DataRepository", "E2EE: Decrypted message too short for timestamp prefix")
+                            }
+                        } catch (e: Exception) {
+                            Log.e("DataRepository", "E2EE: Failed decryption attempt", e)
+                            finalMessageText = "[Encrypted Message — Decryption Error]"
+                        }
+                    } else {
+                        Log.w("DataRepository", "E2EE: Received encrypted message from $senderUuid but no session key exists")
+                        finalMessageText = "[Encrypted Message — Pair to Decrypt]"
+                    }
+                } else {
+                    // Plaintext message
+                    if (textBytes.size >= 8) {
+                        val buffer = ByteBuffer.wrap(textBytes)
+                        msgTimestamp = buffer.long
+                        finalMessageText = String(textBytes, 8, textBytes.size - 8, Charsets.UTF_8)
+                    } else {
+                        finalMessageText = String(textBytes, Charsets.UTF_8)
+                    }
+                }
 
                 if (senderUuid.isNotEmpty() && !message.isFromMe) {
                     if (isDuplicateMessageContent(senderUuid, finalMessageText)) {
@@ -215,11 +238,11 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                 }
 
                 if (isPasscodeEnabled() && senderUuid.isNotEmpty() && !message.isFromMe) {
-                    dbHelper.insertMessage(senderUuid, finalMessageText, message.timestamp, "RECEIVED", false)
+                    dbHelper.insertMessage(senderUuid, finalMessageText, msgTimestamp, "RECEIVED", false)
                 }
 
                 if (senderUuid == activeChatUuid && !message.isFromMe) {
-                    val displayMessage = message.copy(text = finalMessageText)
+                    val displayMessage = message.copy(text = finalMessageText, timestamp = msgTimestamp)
                     _chatMessages.update { current -> current + displayMessage }
                 }
             }
@@ -262,6 +285,25 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                         }
                     }
                 }
+
+                // Auto-connect to contacts with pending messages
+                if (isPasscodeEnabled() && connectionStatus.value == ConnectionStatus.DISCONNECTED) {
+                    for (peer in peers) {
+                        if (isContact(peer.uuid)) {
+                            val pending = dbHelper.getPendingMessages(peer.uuid)
+                            if (pending.isNotEmpty()) {
+                                val lastAttempt = lastConnectionAttempts[peer.uuid] ?: 0L
+                                val now = System.currentTimeMillis()
+                                if (now - lastAttempt > 15000) {
+                                    lastConnectionAttempts[peer.uuid] = now
+                                    Log.i("DataRepository", "Auto-connecting to contact ${peer.uuid} (${peer.name}) to send ${pending.size} pending messages")
+                                    connectToPeerByUuid(peer.uuid)
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -297,10 +339,11 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
         val sessionKey = sessionKeys[activeChatUuid]
 
         val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt() // Ensure MSB is 0 initially
+        var sentSuccessfully = false
 
         if (sessionKey != null) {
             // Encrypt the message!
-            val plaintextBytes = text.toByteArray(Charsets.UTF_8)
+            val plaintextBytes = BluetoothHandler.encodePayload(timestamp, text)
             val encryptedBytes = CryptoUtils.encryptDecryptXOR(plaintextBytes, sessionKey, messageId or java.lang.Integer.MIN_VALUE)
             val encryptedTextLatin1 = String(encryptedBytes, Charsets.ISO_8859_1)
             
@@ -311,7 +354,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
             bluetoothHandler.advertiseMeshMessage(messageId or java.lang.Integer.MIN_VALUE, senderUuid, recipientUuid, encryptedTextLatin1)
 
             if (peer != null && bluetoothHandler.isReady.value) {
-                bluetoothHandler.sendMessageEncrypted(encryptedBytes, messageId)
+                sentSuccessfully = bluetoothHandler.sendMessageEncrypted(encryptedBytes, messageId)
             }
         } else {
             Log.i("DataRepository", "E2EE: No session key found for $activeChatUuid. Sending plain text.")
@@ -320,15 +363,18 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
             bluetoothHandler.advertiseMeshMessage(messageId, senderUuid, recipientUuid, text)
 
             if (peer != null && bluetoothHandler.isReady.value) {
-                bluetoothHandler.sendMessage(text)
+                val plaintextBytes = BluetoothHandler.encodePayload(timestamp, text)
+                sentSuccessfully = bluetoothHandler.sendMessage(plaintextBytes)
             }
         }
 
-        // Save to DB as SENT only if passcode is enabled
+        val status = if (sentSuccessfully) "SENT" else "PENDING"
+
+        // Save to DB only if passcode is enabled
         if (isPasscodeEnabled()) {
-            dbHelper.insertMessage(activeChatUuid, text, timestamp, "SENT", true)
+            dbHelper.insertMessage(activeChatUuid, text, timestamp, status, true)
         }
-        _chatMessages.update { current -> current + ChatMessage(text, true, timestamp, "SENT") }
+        _chatMessages.update { current -> current + ChatMessage(text, true, timestamp, status) }
         return true
     }
 
@@ -419,17 +465,24 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
     private fun sendPendingMessages(peerUuid: String) {
         val pending = dbHelper.getPendingMessages(peerUuid)
         if (pending.isEmpty()) return
-        Log.d("DataRepository", "Found ${pending.size} pending messages for $peerUuid. Sending sequentially...")
 
         val sessionKey = sessionKeys[peerUuid]
+        if (isContact(peerUuid) && sessionKey == null) {
+            Log.d("DataRepository", "sendPendingMessages: Contact $peerUuid has pending messages but no E2EE key yet, waiting for exchange.")
+            return
+        }
+
+        Log.d("DataRepository", "Found ${pending.size} pending messages for $peerUuid. Sending sequentially...")
+
         for (msg in pending) {
             val success = if (sessionKey != null) {
                 val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
-                val plaintextBytes = msg.second.toByteArray(Charsets.UTF_8)
+                val plaintextBytes = BluetoothHandler.encodePayload(msg.third, msg.second)
                 val encryptedBytes = CryptoUtils.encryptDecryptXOR(plaintextBytes, sessionKey, messageId or java.lang.Integer.MIN_VALUE)
                 bluetoothHandler.sendMessageEncrypted(encryptedBytes, messageId)
             } else {
-                bluetoothHandler.sendMessage(msg.second)
+                val plaintextBytes = BluetoothHandler.encodePayload(msg.third, msg.second)
+                bluetoothHandler.sendMessage(plaintextBytes)
             }
             if (success) {
                 dbHelper.markMessageAsSent(msg.first)

@@ -109,18 +109,19 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
         return list
     }
 
-    fun getPendingMessages(contactUuid: String): List<Pair<Int, String>> {
-        val list = mutableListOf<Pair<Int, String>>()
+    fun getPendingMessages(contactUuid: String): List<Triple<Int, String, Long>> {
+        val list = mutableListOf<Triple<Int, String, Long>>()
         val db = readableDatabase
         val cursor = db.rawQuery(
-            "SELECT id, text FROM QueuedMessages WHERE contact_uuid = ? AND status = 'PENDING' ORDER BY timestamp ASC",
+            "SELECT id, text, timestamp FROM QueuedMessages WHERE contact_uuid = ? AND status = 'PENDING' ORDER BY timestamp ASC",
             arrayOf(contactUuid)
         )
         if (cursor.moveToFirst()) {
             do {
                 val id = cursor.getInt(0)
                 val text = cursor.getString(1)
-                list.add(Pair(id, text))
+                val timestamp = cursor.getLong(2)
+                list.add(Triple(id, text, timestamp))
             } while (cursor.moveToNext())
         }
         cursor.close()

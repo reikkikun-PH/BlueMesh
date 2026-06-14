@@ -44,6 +44,24 @@ class BluetoothHandler(private val context: Context) {
         private const val MESH_SERVICE_UUID_STR = "12345678-1234-5678-1234-567890abcdef"
         private const val MESH_COMPANY_ID = 0xFFFF
         private const val CACHE_MAX_SIZE = 100
+
+        fun encodePayload(timestamp: Long, text: String): ByteArray {
+            val textBytes = text.toByteArray(Charsets.UTF_8)
+            val buffer = ByteBuffer.allocate(8 + textBytes.size)
+            buffer.putLong(timestamp)
+            buffer.put(textBytes)
+            return buffer.array()
+        }
+
+        fun decodePayload(payload: ByteArray): Pair<Long, String>? {
+            if (payload.size < 8) return null
+            val buffer = ByteBuffer.wrap(payload)
+            val timestamp = buffer.long
+            val textBytes = ByteArray(payload.size - 8)
+            buffer.get(textBytes)
+            val text = String(textBytes, Charsets.UTF_8)
+            return Pair(timestamp, text)
+        }
     }
 
     private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
@@ -356,10 +374,11 @@ class BluetoothHandler(private val context: Context) {
                     }
                     return
                 }
-                val messageText = parseAndDecompress(value)
-                if (messageText != null) {
-                    Log.i(TAG, "Server received write request from ${device.address}: $messageText")
-                    _messages.tryEmit(ChatMessage(messageText, isFromMe = false, timestamp = System.currentTimeMillis()))
+                val messageBytes = parseAndDecompress(value)
+                if (messageBytes != null) {
+                    val messageTextLatin1 = String(messageBytes, Charsets.ISO_8859_1)
+                    Log.i(TAG, "Server received write request from ${device.address}: bytes size ${messageBytes.size}")
+                    _messages.tryEmit(ChatMessage(messageTextLatin1, isFromMe = false, timestamp = System.currentTimeMillis()))
                 }
             }
         }
@@ -602,10 +621,11 @@ class BluetoothHandler(private val context: Context) {
                         }
                         return
                     }
-                    val messageText = parseAndDecompress(value)
-                    if (messageText != null) {
-                        Log.i(TAG, "Client received notification: $messageText")
-                        _messages.tryEmit(ChatMessage(messageText, isFromMe = false, timestamp = System.currentTimeMillis()))
+                    val messageBytes = parseAndDecompress(value)
+                    if (messageBytes != null) {
+                        val messageTextLatin1 = String(messageBytes, Charsets.ISO_8859_1)
+                        Log.i(TAG, "Client received notification: bytes size ${messageBytes.size}")
+                        _messages.tryEmit(ChatMessage(messageTextLatin1, isFromMe = false, timestamp = System.currentTimeMillis()))
                     }
                 }
             }
@@ -1170,7 +1190,7 @@ class BluetoothHandler(private val context: Context) {
         return UUID(high, low)
     }
 
-    private fun parseAndDecompress(value: ByteArray): String? {
+    private fun parseAndDecompress(value: ByteArray): ByteArray? {
         if (value.size < 2) {
             Log.w(TAG, "parseAndDecompress: Packet too short (${value.size} bytes)")
             return null
@@ -1187,8 +1207,7 @@ class BluetoothHandler(private val context: Context) {
         
         return if (isEncrypted) {
             if (value.size < 6) return null
-            val encryptedPkg = value.copyOfRange(2, value.size)
-            String(encryptedPkg, Charsets.ISO_8859_1)
+            value.copyOfRange(2, value.size)
         } else {
             try {
                 if (isCompressed) {
@@ -1200,9 +1219,9 @@ class BluetoothHandler(private val context: Context) {
                         compressedData, 0, compressedData.size,
                         tempDest, 0, tempDest.size
                     )
-                    String(tempDest, 0, decompressedLength, Charsets.UTF_8)
+                    tempDest.copyOfRange(0, decompressedLength)
                 } else {
-                    String(value, 2, value.size - 2, Charsets.UTF_8)
+                    value.copyOfRange(2, value.size)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "parseAndDecompress failed to decompress/parse", e)
@@ -1212,7 +1231,12 @@ class BluetoothHandler(private val context: Context) {
     }
 
     fun sendMessage(text: String): Boolean {
-        val bytes = text.toByteArray(Charsets.UTF_8)
+        val timestamp = System.currentTimeMillis()
+        val payload = encodePayload(timestamp, text)
+        return sendMessage(payload)
+    }
+
+    fun sendMessage(bytes: ByteArray): Boolean {
         var payload: ByteArray
         try {
             val fastCompressor = LZ4Factory.fastestInstance().fastCompressor()
@@ -1279,6 +1303,7 @@ class BluetoothHandler(private val context: Context) {
                 }
             }
             if (success) {
+                val text = decodePayload(bytes)?.second ?: String(bytes, Charsets.UTF_8)
                 _messages.tryEmit(ChatMessage(text, isFromMe = true, timestamp = System.currentTimeMillis()))
                 return true
             }
@@ -1315,6 +1340,7 @@ class BluetoothHandler(private val context: Context) {
                     }
                 }
                 if (success) {
+                    val text = decodePayload(bytes)?.second ?: String(bytes, Charsets.UTF_8)
                     _messages.tryEmit(ChatMessage(text, isFromMe = true, timestamp = System.currentTimeMillis()))
                     return true
                 }
