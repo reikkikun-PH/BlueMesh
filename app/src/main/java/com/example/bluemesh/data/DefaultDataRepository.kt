@@ -190,8 +190,20 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
         scope.launch {
             bluetoothHandler.connectionStatus.collect { status ->
-                if (status == ConnectionStatus.DISCONNECTED && activeChatUuid.isNotEmpty() && isPasscodeEnabled()) {
-                    _chatMessages.value = dbHelper.getMessagesForContact(activeChatUuid)
+                if (status == ConnectionStatus.DISCONNECTED) {
+                    if (activeChatUuid.isNotEmpty() && isPasscodeEnabled()) {
+                        _chatMessages.value = dbHelper.getMessagesForContact(activeChatUuid)
+                    }
+                    startScan()
+                    if (isDiscoverableEnabled()) {
+                        val name = getDisplayName()
+                        if (name.isNotEmpty()) {
+                            startAdvertising(name)
+                        }
+                    }
+                } else if (status == ConnectionStatus.CONNECTED || status == ConnectionStatus.SYNCHRONIZING) {
+                    stopScan()
+                    stopAdvertising()
                 }
             }
         }
