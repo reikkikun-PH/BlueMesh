@@ -153,7 +153,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 val isEncrypted = textBytes.size >= 4 && (ByteBuffer.wrap(textBytes, 0, 4).apply { order(ByteOrder.BIG_ENDIAN) }.int and java.lang.Integer.MIN_VALUE) != 0
 
                 if (isEncrypted) {
-                    val sessionKey = sessionKeys[senderUuid]
+                    val sessionKey = getSessionKeyForUuid(senderUuid)
                     if (sessionKey != null) {
                         try {
                             val messageId = ByteBuffer.wrap(textBytes, 0, 4).apply { order(ByteOrder.BIG_ENDIAN) }.int
@@ -318,7 +318,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         if (activeChatUuid.isEmpty()) return false
         val timestamp = System.currentTimeMillis()
         val peer = bluetoothHandler.discoveredPeers.value.find { it.uuid == activeChatUuid }
-        val sessionKey = sessionKeys[activeChatUuid]
+        val sessionKey = getSessionKeyForUuid(activeChatUuid)
         val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
         var sent = false
 
@@ -428,7 +428,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
         val pending = dbHelper.getPendingMessages(canonicalUuid)
         if (pending.isEmpty()) return
-        val sessionKey = sessionKeys[canonicalUuid] ?: sessionKeys[peerUuid]
+        val sessionKey = getSessionKeyForUuid(canonicalUuid) ?: getSessionKeyForUuid(peerUuid)
         if (isContact(canonicalUuid) && sessionKey == null) return
 
         for (msg in pending) {
@@ -515,5 +515,16 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             result[i / 2] = substring(i, i + 2).toInt(16).toByte()
         }
         return result
+    }
+
+    private fun getSessionKeyForUuid(uuid: String): ByteArray? {
+        val direct = sessionKeys[uuid]
+        if (direct != null) return direct
+        val normalized = uuid.replace("-", "").lowercase()
+        val matchKey = sessionKeys.keys.find {
+            val kNorm = it.replace("-", "").lowercase()
+            kNorm == normalized || (normalized.length == 16 && kNorm.startsWith(normalized)) || (kNorm.length == 16 && normalized.startsWith(kNorm))
+        }
+        return if (matchKey != null) sessionKeys[matchKey] else null
     }
 }
