@@ -211,4 +211,44 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
         cursor.close()
         return key
     }
+
+    fun upgradeContactUuid(oldUuid: String, newUuid: String) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val checkCursor = db.rawQuery("SELECT session_key, name, is_official FROM Contacts WHERE uuid = ?", arrayOf(newUuid))
+            val newExists = checkCursor.count > 0
+            var oldSessionKey: String? = null
+            
+            val oldCursor = db.rawQuery("SELECT session_key, name, is_official FROM Contacts WHERE uuid = ?", arrayOf(oldUuid))
+            if (oldCursor.moveToFirst()) {
+                oldSessionKey = oldCursor.getString(0)
+            }
+            oldCursor.close()
+
+            if (newExists) {
+                if (checkCursor.moveToFirst()) {
+                    val newSessionKey = checkCursor.getString(0)
+                    if (newSessionKey.isNullOrEmpty() && !oldSessionKey.isNullOrEmpty()) {
+                        val values = ContentValues().apply {
+                            put("session_key", oldSessionKey)
+                        }
+                        db.update("Contacts", values, "uuid = ?", arrayOf(newUuid))
+                    }
+                }
+                db.delete("Contacts", "uuid = ?", arrayOf(oldUuid))
+            } else {
+                val values = ContentValues().apply {
+                    put("uuid", newUuid)
+                }
+                db.update("Contacts", values, "uuid = ?", arrayOf(oldUuid))
+            }
+            checkCursor.close()
+            
+            updateMessageContactUuid(oldUuid, newUuid)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
 }

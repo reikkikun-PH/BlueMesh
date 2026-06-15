@@ -101,6 +101,28 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             bluetoothHandler.updatePeerUuid(senderUuid)
             val activeNorm = activeChatUuid.replace("-", "").lowercase()
             val senderNorm = senderUuid.replace("-", "").lowercase()
+            
+            if (isPasscodeEnabled()) {
+                val shortSenderUuid = if (senderNorm.length >= 16) senderNorm.take(16) else senderNorm
+                val contacts = dbHelper.getContactsList()
+                val storedContact = contacts.find {
+                    val storedNorm = it.first.replace("-", "").lowercase()
+                    storedNorm == shortSenderUuid || (storedNorm.length == 16 && shortSenderUuid.startsWith(storedNorm))
+                }
+                if (storedContact != null) {
+                    val storedUuid = storedContact.first
+                    val storedNorm = storedUuid.replace("-", "").lowercase()
+                    if (storedNorm.length == 16 && senderNorm.length > 16) {
+                        dbHelper.upgradeContactUuid(storedUuid, senderUuid)
+                        val existingKey = sessionKeys[storedUuid]
+                        if (existingKey != null) {
+                            sessionKeys[senderUuid] = existingKey
+                            sessionKeys.remove(storedUuid)
+                        }
+                    }
+                }
+            }
+
             if (activeNorm.length == 16 && senderNorm.startsWith(activeNorm)) {
                 activeChatUuid = senderUuid
                 if (isPasscodeEnabled()) {
@@ -131,11 +153,11 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 val senderUuid = if (message.senderHash != null) {
                     val myUuidHash = getUserUuid().hashCode()
                     if (message.recipientHash != myUuidHash && message.recipientHash != 0) return@collect
-                    val resolved = if (activeChatUuid.isNotEmpty() && (activeChatUuid.hashCode() == message.senderHash || (activeChatUuid.startsWith("mesh_") && activeChatUuid.substringAfter("mesh_").toIntOrNull() == message.senderHash))) {
+                    val resolved = if (activeChatUuid.isNotEmpty() && uuidMatchesHash(activeChatUuid, message.senderHash)) {
                         activeChatUuid
                     } else {
-                        getContacts().find { it.uuid.hashCode() == message.senderHash }?.uuid
-                            ?: bluetoothHandler.discoveredPeers.value.find { it.uuid.hashCode() == message.senderHash }?.uuid
+                        getContacts().find { uuidMatchesHash(it.uuid, message.senderHash) }?.uuid
+                            ?: bluetoothHandler.discoveredPeers.value.find { uuidMatchesHash(it.uuid, message.senderHash) }?.uuid
                     }
                     resolved ?: "mesh_${message.senderHash}".also { tempUuid ->
                         if (isPasscodeEnabled() && !isContact(tempUuid)) {
@@ -223,9 +245,12 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                                 val sNorm = stored.uuid.replace("-", "").lowercase()
                                 val pNorm = peer.uuid.replace("-", "").lowercase()
                                 if (sNorm.length == 16 && pNorm.length > 16) {
-                                    dbHelper.deleteContact(stored.uuid)
-                                    saveContact(peer.uuid, peer.name)
-                                    dbHelper.updateMessageContactUuid(stored.uuid, peer.uuid)
+                                    dbHelper.upgradeContactUuid(stored.uuid, peer.uuid)
+                                    val existingKey = sessionKeys[stored.uuid]
+                                    if (existingKey != null) {
+                                        sessionKeys[peer.uuid] = existingKey
+                                        sessionKeys.remove(stored.uuid)
+                                    }
                                 } else if (stored.name != peer.name || stored.isOfficial != peer.isOfficial) {
                                     saveContact(stored.uuid, peer.name)
                                 }
@@ -295,7 +320,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         val builder = androidx.core.app.NotificationCompat.Builder(context, "bluemesh_contact_messages")
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(contactName)
-            .setContentText(text)
+            .setContentText("You have a new message")
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
@@ -526,5 +551,18 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             kNorm == normalized || (normalized.length == 16 && kNorm.startsWith(normalized)) || (kNorm.length == 16 && normalized.startsWith(kNorm))
         }
         return if (matchKey != null) sessionKeys[matchKey] else null
+    }
+
+    private fun uuidMatchesHash(uuid: String, hash: Int): Boolean {
+        if (uuid.hashCode() == hash) return true
+        val normalized = uuid.replace("-", "").lowercase()
+        if (normalized.hashCode() == hash) return true
+        val shortUuid = if (normalized.length >= 16) normalized.take(16) else normalized
+        if (shortUuid.hashCode() == hash) return true
+        if (uuid.startsWith("mesh_")) {
+            val meshId = uuid.substringAfter("mesh_").toIntOrNull()
+            if (meshId == hash) return true
+        }
+        return false
     }
 }

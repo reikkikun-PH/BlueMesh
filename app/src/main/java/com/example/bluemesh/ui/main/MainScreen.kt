@@ -137,11 +137,11 @@ fun MainScreen(
                     icon = {
                         Icon(
                             imageVector = Icons.Default.Info,
-                            contentDescription = "About Us",
+                            contentDescription = "About",
                             tint = Color(0xFF8B5CF6)
                         )
                     },
-                    label = { Text("About Us", color = Color.White) },
+                    label = { Text("About", color = Color.White) },
                     selected = false,
                     onClick = {
                         scope.launch { drawerState.close() }

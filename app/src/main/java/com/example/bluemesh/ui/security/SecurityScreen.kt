@@ -191,7 +191,7 @@ fun SecurityScreen(
                                         fontWeight = FontWeight.SemiBold
                                     )
                                     Text(
-                                        text = "Update your 4-to-6 digit PIN",
+                                        text = "Update your 4-digit PIN",
                                         color = Color(0xFF94A3B8),
                                         fontSize = 12.sp
                                     )

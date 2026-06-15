@@ -440,22 +440,9 @@ class BluetoothHandler(private val context: Context) {
     }
 
     fun startScanning() {
+        if (_isScanning.value) return
         val timeSinceLastScan = System.currentTimeMillis() - lastScanStartTime
         if (timeSinceLastScan < 3000) return
-
-        if (_isScanning.value) {
-            stopScanning()
-            _discoveredPeers.value = emptyList()
-            if (bluetoothGattServer != null) {
-                stopGattServer()
-                startGattServer()
-            }
-            scope.launch {
-                delay(200)
-                startScanning()
-            }
-            return
-        }
 
         val adapter = bluetoothAdapter
         if (adapter == null || !adapter.isEnabled) {
