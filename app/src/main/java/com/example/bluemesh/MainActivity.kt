@@ -134,9 +134,6 @@ class MainActivity : ComponentActivity() {
       permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
       permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
     }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      permissions.add(Manifest.permission.POST_NOTIFICATIONS)
-    }
     return permissions.toTypedArray()
   }
 

@@ -67,7 +67,6 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     override val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
 
     init {
-        createNotificationChannel()
         if (isPasscodeEnabled()) {
             if (getUserUuid().isEmpty()) {
                 prefs.edit().putString("user_uuid", UUID.randomUUID().toString()).apply()
@@ -159,11 +158,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         getContacts().find { uuidMatchesHash(it.uuid, message.senderHash) }?.uuid
                             ?: bluetoothHandler.discoveredPeers.value.find { uuidMatchesHash(it.uuid, message.senderHash) }?.uuid
                     }
-                    resolved ?: "mesh_${message.senderHash}".also { tempUuid ->
-                        if (isPasscodeEnabled() && !isContact(tempUuid)) {
-                            saveContact(tempUuid, "Mesh Peer ${message.senderHash.toLong() and 0xFFFFFFFFL}")
-                        }
-                    }
+                    resolved ?: "mesh_${message.senderHash}"
                 } else {
                     peer?.uuid ?: activeChatUuid
                 }
@@ -172,33 +167,11 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 var msgTimestamp = message.timestamp
                 var finalMessageText = ""
 
-                val isEncrypted = textBytes.size >= 4 && (ByteBuffer.wrap(textBytes, 0, 4).apply { order(ByteOrder.BIG_ENDIAN) }.int and java.lang.Integer.MIN_VALUE) != 0
-
-                if (isEncrypted) {
-                    val sessionKey = getSessionKeyForUuid(senderUuid)
-                    if (sessionKey != null) {
-                        try {
-                            val messageId = ByteBuffer.wrap(textBytes, 0, 4).apply { order(ByteOrder.BIG_ENDIAN) }.int
-                            val decrypted = CryptoUtils.encryptDecryptXOR(textBytes.copyOfRange(4, textBytes.size), sessionKey, messageId)
-                            if (decrypted.size >= 8) {
-                                msgTimestamp = ByteBuffer.wrap(decrypted).long
-                                finalMessageText = String(decrypted, 8, decrypted.size - 8, Charsets.UTF_8)
-                            } else {
-                                finalMessageText = String(decrypted, Charsets.UTF_8)
-                            }
-                        } catch (e: Exception) {
-                            finalMessageText = "[Encrypted Message — Decryption Error]"
-                        }
-                    } else {
-                        finalMessageText = "[Encrypted Message — Pair to Decrypt]"
-                    }
+                if (textBytes.size >= 8) {
+                    msgTimestamp = ByteBuffer.wrap(textBytes).long
+                    finalMessageText = String(textBytes, 8, textBytes.size - 8, Charsets.UTF_8)
                 } else {
-                    if (textBytes.size >= 8) {
-                        msgTimestamp = ByteBuffer.wrap(textBytes).long
-                        finalMessageText = String(textBytes, 8, textBytes.size - 8, Charsets.UTF_8)
-                    } else {
-                        finalMessageText = String(textBytes, Charsets.UTF_8)
-                    }
+                    finalMessageText = String(textBytes, Charsets.UTF_8)
                 }
 
                 if (senderUuid.isNotEmpty() && !message.isFromMe) {
@@ -207,14 +180,6 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
                 if (isPasscodeEnabled() && senderUuid.isNotEmpty() && !message.isFromMe) {
                     dbHelper.insertMessage(senderUuid, finalMessageText, msgTimestamp, "RECEIVED", false)
-                    if (isContact(senderUuid)) {
-                        val activeNorm = activeChatUuid.replace("-", "").lowercase()
-                        val senderNorm = senderUuid.replace("-", "").lowercase()
-                        val isCurrentChat = activeNorm == senderNorm || (senderNorm.length == 16 && activeNorm.startsWith(senderNorm)) || (activeNorm.length == 16 && senderNorm.startsWith(activeNorm))
-                        if (!isCurrentChat) {
-                            showNotification(senderUuid, finalMessageText)
-                        }
-                    }
                 }
 
                 if (senderUuid == activeChatUuid && !message.isFromMe) {
@@ -275,63 +240,6 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         }
     }
 
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                "bluemesh_contact_messages",
-                "Contact Messages",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Notifications for incoming messages from contacts"
-            }
-            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
-        }
-    }
-
-    private fun showNotification(senderUuid: String, text: String) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (androidx.core.content.ContextCompat.checkSelfPermission(
-                    context,
-                    android.Manifest.permission.POST_NOTIFICATIONS
-                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
-            ) {
-                return
-            }
-        }
-
-        val contactName = dbHelper.getContactsList().find {
-            val s = it.first.replace("-", "").lowercase()
-            val p = senderUuid.replace("-", "").lowercase()
-            s == p || (p.length == 16 && s.startsWith(p)) || (s.length == 16 && p.startsWith(s))
-        }?.second ?: "Unknown Contact"
-
-        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-            putExtra("open_chat_uuid", senderUuid)
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            0,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val builder = androidx.core.app.NotificationCompat.Builder(context, "bluemesh_contact_messages")
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle(contactName)
-            .setContentText("You have a new message")
-            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-
-        try {
-            androidx.core.app.NotificationManagerCompat.from(context).notify(senderUuid.hashCode(), builder.build())
-        } catch (e: SecurityException) {
-            Log.e("DataRepository", "Failed to show notification", e)
-        }
-    }
-
     override fun startScan() = bluetoothHandler.startScanning()
     override fun stopScan() = bluetoothHandler.stopScanning()
     override fun startAdvertising(name: String) = bluetoothHandler.startAdvertising(name)
@@ -343,24 +251,12 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         if (activeChatUuid.isEmpty()) return false
         val timestamp = System.currentTimeMillis()
         val peer = bluetoothHandler.discoveredPeers.value.find { it.uuid == activeChatUuid }
-        val sessionKey = getSessionKeyForUuid(activeChatUuid)
         val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
         var sent = false
 
-        if (sessionKey != null) {
-            val plaintextBytes = BluetoothHandler.encodePayload(timestamp, text)
-            val encryptedBytes = CryptoUtils.encryptDecryptXOR(plaintextBytes, sessionKey, messageId or java.lang.Integer.MIN_VALUE)
-            val encryptedTextLatin1 = String(encryptedBytes, Charsets.ISO_8859_1)
-            
-            bluetoothHandler.advertiseMeshMessage(messageId or java.lang.Integer.MIN_VALUE, getUserUuid(), activeChatUuid, encryptedTextLatin1)
-            if (peer != null && bluetoothHandler.isReady.value) {
-                sent = bluetoothHandler.sendMessageEncrypted(encryptedBytes, messageId)
-            }
-        } else {
-            bluetoothHandler.advertiseMeshMessage(messageId, getUserUuid(), activeChatUuid, text)
-            if (peer != null && bluetoothHandler.isReady.value) {
-                sent = bluetoothHandler.sendMessage(BluetoothHandler.encodePayload(timestamp, text))
-            }
+        bluetoothHandler.advertiseMeshMessage(messageId, getUserUuid(), activeChatUuid, text)
+        if (peer != null && bluetoothHandler.isReady.value) {
+            sent = bluetoothHandler.sendMessage(BluetoothHandler.encodePayload(timestamp, text))
         }
 
         if (isPasscodeEnabled()) {
@@ -453,22 +349,13 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
         val pending = dbHelper.getPendingMessages(canonicalUuid)
         if (pending.isEmpty()) return
-        val sessionKey = getSessionKeyForUuid(canonicalUuid) ?: getSessionKeyForUuid(peerUuid)
-        if (isContact(canonicalUuid) && sessionKey == null) return
 
         for (msg in pending) {
             var success = false
             var retryCount = 0
             while (!success && retryCount < 3) {
                 if (retryCount > 0) delay(300)
-                success = if (sessionKey != null) {
-                    val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
-                    val plaintextBytes = BluetoothHandler.encodePayload(msg.third, msg.second)
-                    val encryptedBytes = CryptoUtils.encryptDecryptXOR(plaintextBytes, sessionKey, messageId or java.lang.Integer.MIN_VALUE)
-                    bluetoothHandler.sendMessageEncrypted(encryptedBytes, messageId)
-                } else {
-                    bluetoothHandler.sendMessage(BluetoothHandler.encodePayload(msg.third, msg.second))
-                }
+                success = bluetoothHandler.sendMessage(BluetoothHandler.encodePayload(msg.third, msg.second))
                 retryCount++
             }
             if (success) {
