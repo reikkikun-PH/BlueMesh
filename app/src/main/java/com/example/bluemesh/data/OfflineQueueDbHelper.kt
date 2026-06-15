@@ -89,14 +89,44 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
         return db.insert("QueuedMessages", null, values)
     }
 
+    private fun resolveCanonicalUuid(contactUuid: String): String {
+        val normTarget = contactUuid.replace("-", "").lowercase()
+        val contacts = getContactsList()
+        val match = contacts.find {
+            val dbNorm = it.first.replace("-", "").lowercase()
+            dbNorm == normTarget || (normTarget.length == 16 && dbNorm.startsWith(normTarget)) || (dbNorm.length == 16 && normTarget.startsWith(dbNorm))
+        }
+        return match?.first ?: contactUuid
+    }
+
     fun getMessagesForContact(contactUuid: String): List<ChatMessage> {
+        val resolvedUuid = resolveCanonicalUuid(contactUuid)
         val list = mutableListOf<ChatMessage>()
         val db = readableDatabase
         val cursor = db.rawQuery(
             "SELECT text, is_from_me, timestamp, status FROM QueuedMessages WHERE contact_uuid = ? ORDER BY timestamp ASC",
-            arrayOf(contactUuid)
+            arrayOf(resolvedUuid)
         )
-        if (cursor.moveToFirst()) {
+        var hasData = cursor.moveToFirst()
+        if (!hasData && resolvedUuid != contactUuid) {
+            cursor.close()
+            val cursorFallback = db.rawQuery(
+                "SELECT text, is_from_me, timestamp, status FROM QueuedMessages WHERE contact_uuid = ? ORDER BY timestamp ASC",
+                arrayOf(contactUuid)
+            )
+            if (cursorFallback.moveToFirst()) {
+                do {
+                    val text = cursorFallback.getString(0)
+                    val isFromMe = cursorFallback.getInt(1) == 1
+                    val timestamp = cursorFallback.getLong(2)
+                    val status = cursorFallback.getString(3)
+                    list.add(ChatMessage(text, isFromMe, timestamp, status))
+                } while (cursorFallback.moveToNext())
+            }
+            cursorFallback.close()
+            return list
+        }
+        if (hasData) {
             do {
                 val text = cursor.getString(0)
                 val isFromMe = cursor.getInt(1) == 1
@@ -110,13 +140,32 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
     }
 
     fun getPendingMessages(contactUuid: String): List<Triple<Int, String, Long>> {
+        val resolvedUuid = resolveCanonicalUuid(contactUuid)
         val list = mutableListOf<Triple<Int, String, Long>>()
         val db = readableDatabase
         val cursor = db.rawQuery(
             "SELECT id, text, timestamp FROM QueuedMessages WHERE contact_uuid = ? AND status = 'PENDING' ORDER BY timestamp ASC",
-            arrayOf(contactUuid)
+            arrayOf(resolvedUuid)
         )
-        if (cursor.moveToFirst()) {
+        var hasData = cursor.moveToFirst()
+        if (!hasData && resolvedUuid != contactUuid) {
+            cursor.close()
+            val cursorFallback = db.rawQuery(
+                "SELECT id, text, timestamp FROM QueuedMessages WHERE contact_uuid = ? AND status = 'PENDING' ORDER BY timestamp ASC",
+                arrayOf(contactUuid)
+            )
+            if (cursorFallback.moveToFirst()) {
+                do {
+                    val id = cursorFallback.getInt(0)
+                    val text = cursorFallback.getString(1)
+                    val timestamp = cursorFallback.getLong(2)
+                    list.add(Triple(id, text, timestamp))
+                } while (cursorFallback.moveToNext())
+            }
+            cursorFallback.close()
+            return list
+        }
+        if (hasData) {
             do {
                 val id = cursor.getInt(0)
                 val text = cursor.getString(1)
@@ -126,6 +175,14 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
         }
         cursor.close()
         return list
+    }
+
+    fun updateMessageContactUuid(oldUuid: String, newUuid: String) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("contact_uuid", newUuid)
+        }
+        db.update("QueuedMessages", values, "contact_uuid = ?", arrayOf(oldUuid))
     }
 
     fun markMessageAsSent(id: Int) {

@@ -1,7 +1,12 @@
 package com.example.bluemesh.data
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.bluetooth.BluetoothDevice
 import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.util.Log
 import com.example.bluemesh.bluetooth.BluetoothHandler
 import com.example.bluemesh.data.models.BluetoothPeer
@@ -13,13 +18,14 @@ import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-class DefaultDataRepository private constructor(context: Context) : DataRepository {
+class DefaultDataRepository private constructor(private val context: Context) : DataRepository {
 
     companion object {
         @Volatile private var INSTANCE: DefaultDataRepository? = null
@@ -61,6 +67,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
     override val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
 
     init {
+        createNotificationChannel()
         if (isPasscodeEnabled()) {
             if (getUserUuid().isEmpty()) {
                 prefs.edit().putString("user_uuid", UUID.randomUUID().toString()).apply()
@@ -87,7 +94,6 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                 myKeyPair?.let {
                     bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded)
                 }
-                sendPendingMessages(peerUuid)
             }
         }
 
@@ -179,6 +185,14 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
 
                 if (isPasscodeEnabled() && senderUuid.isNotEmpty() && !message.isFromMe) {
                     dbHelper.insertMessage(senderUuid, finalMessageText, msgTimestamp, "RECEIVED", false)
+                    if (isContact(senderUuid)) {
+                        val activeNorm = activeChatUuid.replace("-", "").lowercase()
+                        val senderNorm = senderUuid.replace("-", "").lowercase()
+                        val isCurrentChat = activeNorm == senderNorm || (senderNorm.length == 16 && activeNorm.startsWith(senderNorm)) || (activeNorm.length == 16 && senderNorm.startsWith(activeNorm))
+                        if (!isCurrentChat) {
+                            showNotification(senderUuid, finalMessageText)
+                        }
+                    }
                 }
 
                 if (senderUuid == activeChatUuid && !message.isFromMe) {
@@ -211,6 +225,7 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                                 if (sNorm.length == 16 && pNorm.length > 16) {
                                     dbHelper.deleteContact(stored.uuid)
                                     saveContact(peer.uuid, peer.name)
+                                    dbHelper.updateMessageContactUuid(stored.uuid, peer.uuid)
                                 } else if (stored.name != peer.name || stored.isOfficial != peer.isOfficial) {
                                     saveContact(stored.uuid, peer.name)
                                 }
@@ -232,6 +247,63 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
                     }
                 }
             }
+        }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "bluemesh_contact_messages",
+                "Contact Messages",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Notifications for incoming messages from contacts"
+            }
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun showNotification(senderUuid: String, text: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (androidx.core.content.ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.POST_NOTIFICATIONS
+                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                return
+            }
+        }
+
+        val contactName = dbHelper.getContactsList().find {
+            val s = it.first.replace("-", "").lowercase()
+            val p = senderUuid.replace("-", "").lowercase()
+            s == p || (p.length == 16 && s.startsWith(p)) || (s.length == 16 && p.startsWith(s))
+        }?.second ?: "Unknown Contact"
+
+        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            putExtra("open_chat_uuid", senderUuid)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = androidx.core.app.NotificationCompat.Builder(context, "bluemesh_contact_messages")
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle(contactName)
+            .setContentText(text)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+
+        try {
+            androidx.core.app.NotificationManagerCompat.from(context).notify(senderUuid.hashCode(), builder.build())
+        } catch (e: SecurityException) {
+            Log.e("DataRepository", "Failed to show notification", e)
         }
     }
 
@@ -268,6 +340,11 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
 
         if (isPasscodeEnabled()) {
             dbHelper.insertMessage(activeChatUuid, text, timestamp, if (sent) "SENT" else "PENDING", true)
+            if (!sent) {
+                scope.launch {
+                    sendPendingMessages(activeChatUuid)
+                }
+            }
         }
         _chatMessages.update { current -> current + ChatMessage(text, true, timestamp, if (sent) "SENT" else "PENDING") }
         return true
@@ -341,29 +418,47 @@ class DefaultDataRepository private constructor(context: Context) : DataReposito
         }
     }
 
-    private fun sendPendingMessages(peerUuid: String) {
-        val pending = dbHelper.getPendingMessages(peerUuid)
+    private suspend fun sendPendingMessages(peerUuid: String) {
+        delay(500)
+        val canonicalUuid = dbHelper.getContactsList().find {
+            val s = it.first.replace("-", "").lowercase()
+            val p = peerUuid.replace("-", "").lowercase()
+            s == p || (p.length == 16 && s.startsWith(p)) || (s.length == 16 && p.startsWith(s))
+        }?.first ?: peerUuid
+
+        val pending = dbHelper.getPendingMessages(canonicalUuid)
         if (pending.isEmpty()) return
-        val sessionKey = sessionKeys[peerUuid]
-        if (isContact(peerUuid) && sessionKey == null) return
+        val sessionKey = sessionKeys[canonicalUuid] ?: sessionKeys[peerUuid]
+        if (isContact(canonicalUuid) && sessionKey == null) return
 
         for (msg in pending) {
-            val success = if (sessionKey != null) {
-                val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
-                val plaintextBytes = BluetoothHandler.encodePayload(msg.third, msg.second)
-                val encryptedBytes = CryptoUtils.encryptDecryptXOR(plaintextBytes, sessionKey, messageId or java.lang.Integer.MIN_VALUE)
-                bluetoothHandler.sendMessageEncrypted(encryptedBytes, messageId)
-            } else {
-                bluetoothHandler.sendMessage(BluetoothHandler.encodePayload(msg.third, msg.second))
+            var success = false
+            var retryCount = 0
+            while (!success && retryCount < 3) {
+                if (retryCount > 0) delay(300)
+                success = if (sessionKey != null) {
+                    val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
+                    val plaintextBytes = BluetoothHandler.encodePayload(msg.third, msg.second)
+                    val encryptedBytes = CryptoUtils.encryptDecryptXOR(plaintextBytes, sessionKey, messageId or java.lang.Integer.MIN_VALUE)
+                    bluetoothHandler.sendMessageEncrypted(encryptedBytes, messageId)
+                } else {
+                    bluetoothHandler.sendMessage(BluetoothHandler.encodePayload(msg.third, msg.second))
+                }
+                retryCount++
             }
             if (success) {
                 dbHelper.markMessageAsSent(msg.first)
-                if (peerUuid == activeChatUuid) {
+                val activeNorm = activeChatUuid.replace("-", "").lowercase()
+                val targetNorm = canonicalUuid.replace("-", "").lowercase()
+                if (activeNorm == targetNorm || (targetNorm.length == 16 && activeNorm.startsWith(targetNorm)) || (activeNorm.length == 16 && targetNorm.startsWith(activeNorm))) {
                     _chatMessages.update { current ->
                         current.map { if (it.text == msg.second && it.status == "PENDING") it.copy(status = "SENT") else it }
                     }
                 }
-            } else return
+                delay(100)
+            } else {
+                break
+            }
         }
     }
 

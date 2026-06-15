@@ -125,18 +125,19 @@ class MainActivity : ComponentActivity() {
   }
 
   private fun getRequiredPermissions(): Array<String> {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-      arrayOf(
-        Manifest.permission.BLUETOOTH_SCAN,
-        Manifest.permission.BLUETOOTH_CONNECT,
-        Manifest.permission.BLUETOOTH_ADVERTISE
-      )
+    val permissions = mutableListOf<String>()
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+      permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+      permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
     } else {
-      arrayOf(
-        Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.ACCESS_COARSE_LOCATION
-      )
+      permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+      permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
     }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+    }
+    return permissions.toTypedArray()
   }
 
   private fun hasPermissions(context: Context): Boolean {
