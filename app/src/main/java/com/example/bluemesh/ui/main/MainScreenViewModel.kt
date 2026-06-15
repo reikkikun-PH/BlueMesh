@@ -22,10 +22,6 @@ class MainScreenViewModel(private val dataRepository: DataRepository) : ViewMode
     }
 
     fun toggleDiscoverability(enable: Boolean) {
-        if (enable) {
-            dataRepository.startAdvertising(displayName)
-        } else {
-            dataRepository.stopAdvertising()
-        }
+        dataRepository.setDiscoverableEnabled(enable)
     }
 }

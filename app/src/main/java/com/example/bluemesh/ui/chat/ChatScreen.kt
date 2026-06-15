@@ -29,6 +29,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.example.bluemesh.data.models.ConnectionStatus
+import kotlinx.coroutines.delay
 
 @Composable
 fun ChatScreen(
@@ -63,6 +64,7 @@ fun ChatScreen(
     val listState = rememberLazyListState()
 
     val lifecycleOwner = LocalLifecycleOwner.current
+    val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -82,6 +84,18 @@ fun ChatScreen(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             viewModel.disconnect()
+            repository.setActiveChat("")
+        }
+    }
+
+    if (!isPasscodeEnabled) {
+        LaunchedEffect(status) {
+            if (status == ConnectionStatus.DISCONNECTED) {
+                delay(30000)
+                repository.clearChatHistory()
+                repository.setActiveChat("")
+                onBackClick()
+            }
         }
     }
 

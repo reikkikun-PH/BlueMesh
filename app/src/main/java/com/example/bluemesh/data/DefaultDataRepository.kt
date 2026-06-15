@@ -190,8 +190,8 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
         scope.launch {
             bluetoothHandler.connectionStatus.collect { status ->
-                if (status == ConnectionStatus.DISCONNECTED) {
-                    _chatMessages.value = if (activeChatUuid.isNotEmpty() && isPasscodeEnabled()) dbHelper.getMessagesForContact(activeChatUuid) else emptyList()
+                if (status == ConnectionStatus.DISCONNECTED && activeChatUuid.isNotEmpty() && isPasscodeEnabled()) {
+                    _chatMessages.value = dbHelper.getMessagesForContact(activeChatUuid)
                 }
             }
         }
@@ -224,14 +224,37 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                     }
                 }
 
-                if (isPasscodeEnabled() && connectionStatus.value == ConnectionStatus.DISCONNECTED) {
-                    for (peer in peers) {
-                        if (isContact(peer.uuid) && dbHelper.getPendingMessages(peer.uuid).isNotEmpty()) {
-                            val lastAttempt = lastConnectionAttempts[peer.uuid] ?: 0L
-                            if (System.currentTimeMillis() - lastAttempt > 15000) {
-                                lastConnectionAttempts[peer.uuid] = System.currentTimeMillis()
-                                connectToPeerByUuid(peer.uuid)
-                                break
+                if (connectionStatus.value == ConnectionStatus.DISCONNECTED) {
+                    var attemptedConnection = false
+                    // 1. High priority: reconnect to active chat uuid if discovered
+                    if (activeChatUuid.isNotEmpty()) {
+                        val activePeer = peers.find { peer ->
+                            val s = activeChatUuid.replace("-", "").lowercase()
+                            val p = peer.uuid.replace("-", "").lowercase()
+                            s == p || (p.length == 16 && s.startsWith(p)) || (s.length == 16 && p.startsWith(s))
+                        }
+                        if (activePeer != null) {
+                            val lastAttempt = lastConnectionAttempts[activePeer.uuid] ?: 0L
+                            if (System.currentTimeMillis() - lastAttempt > 5000) {
+                                lastConnectionAttempts[activePeer.uuid] = System.currentTimeMillis()
+                                Log.d("DataRepository", "Auto-reconnecting to active chat peer: ${activePeer.uuid}")
+                                connectToPeerByUuid(activePeer.uuid)
+                                attemptedConnection = true
+                            }
+                        }
+                    }
+
+                    // 2. Reconnect to contacts with pending messages (if passcode enabled)
+                    if (!attemptedConnection && isPasscodeEnabled()) {
+                        for (peer in peers) {
+                            if (isContact(peer.uuid) && dbHelper.getPendingMessages(peer.uuid).isNotEmpty()) {
+                                val lastAttempt = lastConnectionAttempts[peer.uuid] ?: 0L
+                                if (System.currentTimeMillis() - lastAttempt > 5000) {
+                                    lastConnectionAttempts[peer.uuid] = System.currentTimeMillis()
+                                    Log.d("DataRepository", "Auto-reconnecting to contact with pending messages: ${peer.uuid}")
+                                    connectToPeerByUuid(peer.uuid)
+                                    break
+                                }
                             }
                         }
                     }
@@ -407,11 +430,23 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
     override fun setShareLocationEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("is_share_location_enabled", enabled).apply()
-        getDisplayName().let {
-            if (it.isNotEmpty()) {
-                bluetoothHandler.stopAdvertising()
-                bluetoothHandler.startAdvertising(it)
+        if (enabled) {
+            bluetoothHandler.stopAdvertising()
+            bluetoothHandler.startAdvertising(getDisplayName())
+        }
+    }
+
+    override fun isDiscoverableEnabled(): Boolean = prefs.getBoolean("is_discoverable_enabled", true)
+
+    override fun setDiscoverableEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("is_discoverable_enabled", enabled).apply()
+        if (enabled) {
+            val name = getDisplayName()
+            if (name.isNotEmpty()) {
+                startAdvertising(name)
             }
+        } else {
+            stopAdvertising()
         }
     }
 

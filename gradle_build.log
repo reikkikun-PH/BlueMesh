@@ -1,0 +1,64 @@
+Starting a Gradle Daemon, 3 incompatible and 11 stopped Daemons could not be reused, use --status for details
+Reusing configuration cache.
+> Task :app:preBuild UP-TO-DATE
+> Task :app:generateDebugAssets UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:clean
+> Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
+> Task :app:generateDebugResources FROM-CACHE
+> Task :app:generateDebugGlobalSynthetics FROM-CACHE
+> Task :app:extractDeepLinksDebug FROM-CACHE
+> Task :app:javaPreCompileDebug FROM-CACHE
+> Task :app:desugarDebugFileDependencies FROM-CACHE
+> Task :app:packageDebugResources FROM-CACHE
+> Task :app:validateSigningDebug
+> Task :app:createDebugCompatibleScreenManifests
+> Task :app:writeDebugAppMetadata
+> Task :app:mapDebugSourceSetPaths
+> Task :app:writeDebugSigningConfigVersions
+> Task :app:processDebugNavigationResources FROM-CACHE
+> Task :app:parseDebugLocalResources FROM-CACHE
+> Task :app:compileDebugNavigationResources FROM-CACHE
+> Task :app:mergeDebugAssets
+> Task :app:mergeDebugJniLibFolders
+> Task :app:checkDebugAarMetadata
+> Task :app:compressDebugAssets FROM-CACHE
+> Task :app:processDebugMainManifest FROM-CACHE
+> Task :app:generateDebugRFile FROM-CACHE
+> Task :app:processDebugManifest FROM-CACHE
+> Task :app:processDebugManifestForPackage FROM-CACHE
+> Task :app:checkDebugDuplicateClasses
+> Task :app:mergeLibDexDebug FROM-CACHE
+> Task :app:mergeDebugNativeLibs
+
+> Task :app:stripDebugDebugSymbols
+Unable to strip the following libraries, packaging them as they are: libandroidx.graphics.path.so. Run with --info option to learn more.
+
+> Task :app:mergeDebugResources FROM-CACHE
+> Task :app:processDebugResources FROM-CACHE
+> Task :app:mergeExtDexDebug FROM-CACHE
+
+> Task :app:compileDebugKotlin
+w: file:///C:/Users/Ricky/Desktop/BlueMesh/app/src/main/java/com/example/bluemesh/bluetooth/BluetoothHandler.kt:364:22 This declaration overrides a deprecated member but is not marked as deprecated itself. Add the '@Deprecated' annotation or suppress the diagnostic.
+w: file:///C:/Users/Ricky/Desktop/BlueMesh/app/src/main/java/com/example/bluemesh/bluetooth/BluetoothHandler.kt:913:31 'fun writeCharacteristic(p0: BluetoothGattCharacteristic!): Boolean' is deprecated. Deprecated in Java.
+w: file:///C:/Users/Ricky/Desktop/BlueMesh/app/src/main/java/com/example/bluemesh/bluetooth/BluetoothHandler.kt:923:31 'fun notifyCharacteristicChanged(p0: BluetoothDevice!, p1: BluetoothGattCharacteristic!, p2: Boolean): Boolean' is deprecated. Deprecated in Java.
+w: file:///C:/Users/Ricky/Desktop/BlueMesh/app/src/main/java/com/example/bluemesh/ui/chat/ChatScreen.kt:135:54 'val Icons.Filled.ArrowBack: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.ArrowBack.
+w: file:///C:/Users/Ricky/Desktop/BlueMesh/app/src/main/java/com/example/bluemesh/ui/chat/ChatScreen.kt:238:54 'val Icons.Filled.Send: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.Send.
+w: file:///C:/Users/Ricky/Desktop/BlueMesh/app/src/main/java/com/example/bluemesh/ui/contacts/ContactsScreen.kt:148:57 'val Icons.Filled.ArrowBack: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.ArrowBack.
+w: file:///C:/Users/Ricky/Desktop/BlueMesh/app/src/main/java/com/example/bluemesh/ui/contacts/ContactsScreen.kt:249:77 'val Icons.Filled.Chat: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.Chat.
+w: file:///C:/Users/Ricky/Desktop/BlueMesh/app/src/main/java/com/example/bluemesh/ui/lock/LockScreen.kt:126:49 'val Icons.Filled.ArrowBack: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.ArrowBack.
+w: file:///C:/Users/Ricky/Desktop/BlueMesh/app/src/main/java/com/example/bluemesh/ui/lock/LockScreen.kt:281:61 'val Icons.Filled.Backspace: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.Backspace.
+w: file:///C:/Users/Ricky/Desktop/BlueMesh/app/src/main/java/com/example/bluemesh/ui/security/SecurityScreen.kt:64:53 'val Icons.Filled.ArrowBack: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.ArrowBack.
+
+> Task :app:compileDebugJavaWithJavac NO-SOURCE
+> Task :app:processDebugJavaRes
+> Task :app:dexBuilderDebug
+> Task :app:mergeProjectDexDebug
+> Task :app:mergeDebugJavaResource
+> Task :app:packageDebug
+> Task :app:assembleDebug
+> Task :app:createDebugApkListingFileRedirect
+
+BUILD SUCCESSFUL in 40s
+37 actionable tasks: 19 executed, 18 from cache
+Configuration cache entry reused.

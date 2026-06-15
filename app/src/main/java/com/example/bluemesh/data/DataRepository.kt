@@ -39,4 +39,6 @@ interface DataRepository {
     fun disablePasscode()
     fun isShareLocationEnabled(): Boolean
     fun setShareLocationEnabled(enabled: Boolean)
+    fun isDiscoverableEnabled(): Boolean
+    fun setDiscoverableEnabled(enabled: Boolean)
 }

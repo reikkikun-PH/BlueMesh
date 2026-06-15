@@ -66,6 +66,9 @@ fun MainScreen(
                 Lifecycle.Event.ON_RESUME -> {
                     isShareLocationEnabled = repository.isShareLocationEnabled()
                     viewModel.startScanning()
+                    if (repository.isDiscoverableEnabled()) {
+                        viewModel.toggleDiscoverability(true)
+                    }
                 }
                 else -> {}
             }
