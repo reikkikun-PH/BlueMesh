@@ -234,6 +234,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 } catch (e: Exception) {
                     Log.e("DataRepository", "Error in PeerReadyCallback launch", e)
                 }
+                sendPendingMessages(peerUuid)
             }
         }
 
@@ -478,8 +479,8 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                                 }
                             }
 
-                            // 2. Reconnect to contacts with pending messages (if passcode enabled)
-                            if (!attemptedConnection && isPasscodeEnabled()) {
+                            // 2. Reconnect to peers with pending messages
+                            if (!attemptedConnection) {
                                 for (peer in peers) {
                                     val hasPending = try {
                                         dbHelper.getPendingMessages(peer.uuid).isNotEmpty()
@@ -487,11 +488,11 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                                         Log.e("DataRepository", "Error reading pending messages", e)
                                         false
                                     }
-                                    if (isContact(peer.uuid) && hasPending) {
+                                    if (hasPending) {
                                         val lastAttempt = lastConnectionAttempts[peer.uuid] ?: 0L
                                         if (System.currentTimeMillis() - lastAttempt > 5000) {
                                             lastConnectionAttempts[peer.uuid] = System.currentTimeMillis()
-                                            Log.d("DataRepository", "Auto-reconnecting to contact with pending messages: ${peer.uuid}")
+                                            Log.d("DataRepository", "Auto-reconnecting to peer with pending messages: ${peer.uuid}")
                                             connectToPeerByUuid(peer.uuid)
                                             break
                                         }
@@ -588,7 +589,12 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         if (activeChatUuid.isNotEmpty()) {
             scope.launch(Dispatchers.IO) {
                 try {
-                    dbHelper.writableDatabase.delete("QueuedMessages", "contact_uuid = ?", arrayOf(activeChatUuid))
+                    val whereClause = if (isPasscodeEnabled()) {
+                        "contact_uuid = ?"
+                    } else {
+                        "contact_uuid = ? AND status != 'PENDING'"
+                    }
+                    dbHelper.writableDatabase.delete("QueuedMessages", whereClause, arrayOf(activeChatUuid))
                 } catch (e: Exception) {
                     Log.e("DataRepository", "Error clearing chat history", e)
                 }
@@ -649,7 +655,12 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
     override fun setActiveChat(uuid: String) {
         activeChatUuid = uuid
-        _chatMessages.value = if (isPasscodeEnabled()) dbHelper.getMessagesForContact(uuid) else emptyList()
+        _chatMessages.value = if (isPasscodeEnabled()) {
+            dbHelper.getMessagesForContact(uuid)
+        } else {
+            // In ephemeral mode, only load pending messages that are yet to be sent
+            dbHelper.getMessagesForContact(uuid).filter { it.status == "PENDING" }
+        }
     }
 
     override fun connectToPeerByUuid(uuid: String) {
@@ -669,6 +680,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
         for (msg in pending) {
             val sessionKey = getSessionKeyForUuid(canonicalUuid)
+            if (isPasscodeEnabled() && sessionKey == null) {
+                // Wait for E2EE key exchange to complete before sending
+                continue
+            }
             val msgId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
             val payload = if (sessionKey != null) {
                 val rawPayload = BluetoothHandler.encodePayload(msg.third, msg.second)
