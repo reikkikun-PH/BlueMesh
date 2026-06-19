@@ -54,6 +54,7 @@ fun MainScreen(
     val isAdvertising by viewModel.isAdvertising.collectAsStateWithLifecycle()
     val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
     var isShareLocationEnabled by remember { mutableStateOf(repository.isShareLocationEnabled()) }
+    var isDiscoverable by remember { mutableStateOf(repository.isDiscoverableEnabled()) }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -65,6 +66,7 @@ fun MainScreen(
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     isShareLocationEnabled = repository.isShareLocationEnabled()
+                    isDiscoverable = repository.isDiscoverableEnabled()
                     viewModel.startScanning()
                     if (repository.isDiscoverableEnabled()) {
                         viewModel.toggleDiscoverability(true)
@@ -270,15 +272,18 @@ fun MainScreen(
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = if (isAdvertising) "Broadcasting display name offline" else "Invisible to nearby peers",
+                                text = if (isDiscoverable) "Broadcasting display name offline" else "Invisible to nearby peers",
                                 color = Color(0xFF94A3B8),
                                 fontSize = 12.sp
                             )
                         }
 
                         Switch(
-                            checked = isAdvertising,
-                            onCheckedChange = { viewModel.toggleDiscoverability(it) },
+                            checked = isDiscoverable,
+                            onCheckedChange = {
+                                isDiscoverable = it
+                                viewModel.toggleDiscoverability(it)
+                            },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color.White,
                                 checkedTrackColor = Color(0xFF3B82F6),

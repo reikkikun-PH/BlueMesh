@@ -14,8 +14,10 @@ class MainScreenViewModel(private val dataRepository: DataRepository) : ViewMode
         get() = dataRepository.getDisplayName()
 
     fun startScanning() {
+        dataRepository.clearDiscoveredPeers()
         dataRepository.startScan()
     }
+
 
     fun stopScanning() {
         dataRepository.stopScan()
