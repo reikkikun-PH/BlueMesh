@@ -8,8 +8,9 @@
 #include <algorithm>
 #include "esp_gap_ble_api.h"
 
-// Define the Service UUID to filter and transmit on
-#define SERVICE_UUID "12345678-1234-5678-1234-567890abcdef"
+// Define the Service UUIDs for mesh communications and user discovery
+#define MESH_SERVICE_UUID "12345678-1234-5678-1234-567890abcdef"
+#define USER_SERVICE_UUID "b17c8a70-8bde-4d76-bc3e-1b32d2f7881c"
 
 #include <queue>
 #include <atomic>
@@ -48,22 +49,25 @@ uint32_t totalMessagesRelayed = 0;
 
 class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
+        bool isMesh = advertisedDevice.isAdvertisingService(BLEUUID(MESH_SERVICE_UUID));
+        bool isUser = advertisedDevice.isAdvertisingService(BLEUUID(USER_SERVICE_UUID));
+        
         // Filter by Service UUID
-        if (advertisedDevice.isAdvertisingService(BLEUUID(SERVICE_UUID))) {
+        if (isMesh || isUser) {
             if (advertisedDevice.haveManufacturerData()) {
                 auto rawData = advertisedDevice.getManufacturerData();
                 std::string mData(rawData.c_str(), rawData.length());
                 
                 // Distinguish between connectable (Peer Discovery) and non-connectable (Mesh Message)
-                if (advertisedDevice.isConnectable()) {
+                if (isUser && advertisedDevice.isConnectable()) {
                     // Peer Discovery (User advertisement)
-                    // Format: 2 bytes Company ID + 16 bytes UUID + 1 byte passcode flag + Name (0-10 bytes)
-                    if (mData.length() >= 19) {
+                    // Format: 2 bytes Company ID + 8 bytes short UUID + 1 byte passcode flag + Name (0-N bytes)
+                    if (mData.length() >= 11) {
                         const uint8_t* uuid = (const uint8_t*)&mData[2];
-                        uint8_t passcodeFlag = mData[18];
+                        uint8_t passcodeFlag = mData[10];
                         std::string displayName = "";
-                        if (mData.length() > 19) {
-                            displayName = mData.substr(19);
+                        if (mData.length() > 11) {
+                            displayName = mData.substr(11);
                         }
                         
                         totalUsersDetected++;
@@ -72,17 +76,14 @@ class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
                         Serial.println("├────────────────────────────────────────────────────────┤");
                         Serial.printf("│ Display Name:  %-40s │\n", displayName.c_str());
                         Serial.printf("│ Passcode PIN:  %-40s │\n", (passcodeFlag == 1) ? "Locked (Required)" : "None (Disposable)");
-                        Serial.printf("│ UUID:          %02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x │\n",
+                        Serial.printf("│ Short UUID:    %02x%02x%02x%02x%02x%02x%02x%02x                        │\n",
                                       uuid[0], uuid[1], uuid[2], uuid[3],
-                                      uuid[4], uuid[5],
-                                      uuid[6], uuid[7],
-                                      uuid[8], uuid[9],
-                                      uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]);
+                                      uuid[4], uuid[5], uuid[6], uuid[7]);
                         Serial.printf("│ RSSI Strength: %-5d dBm                                │\n", advertisedDevice.getRSSI());
                         Serial.printf("│ Total Seen:    %-5u                                    │\n", totalUsersDetected);
                         Serial.println("└────────────────────────────────────────────────────────┘\n");
                     }
-                } else {
+                } else if (isMesh && !advertisedDevice.isConnectable()) {
                     // Mesh Message
                     // Format: 2 bytes Company ID + 4 bytes msgId + 4 bytes senderHash + 4 bytes recipientHash + Message Text
                     if (mData.length() >= 14) {
@@ -221,7 +222,7 @@ void loop() {
         // Flags: General Discoverable, BR/EDR Not Supported
         oAdvertisementData.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
         // Add Service UUID
-        oAdvertisementData.setCompleteServices(BLEUUID(SERVICE_UUID));
+        oAdvertisementData.setCompleteServices(BLEUUID(MESH_SERVICE_UUID));
         pAdvertising->setAdvertisementData(oAdvertisementData);
 
         // Construct Scan Response Data (prevents exceeding the 31-byte BLE limit)

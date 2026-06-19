@@ -130,10 +130,9 @@ class MainActivity : ComponentActivity() {
       permissions.add(Manifest.permission.BLUETOOTH_SCAN)
       permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
       permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
-    } else {
-      permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
-      permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
     }
+    permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+    permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
     return permissions.toTypedArray()
   }
 

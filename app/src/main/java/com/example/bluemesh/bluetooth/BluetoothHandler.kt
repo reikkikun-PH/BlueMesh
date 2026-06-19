@@ -47,6 +47,7 @@ class BluetoothHandler(private val context: Context) {
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val MESH_SERVICE_UUID_STR = "12345678-1234-5678-1234-567890abcdef"
         private const val MESH_COMPANY_ID = 0xFFFF
+        private const val PEER_MANUFACTURER_ID = 0xFFFF
         private const val CACHE_MAX_SIZE = 100
 
         fun encodePayload(timestamp: Long, text: String): ByteArray {
@@ -93,6 +94,7 @@ class BluetoothHandler(private val context: Context) {
     private val messageIdCache = java.util.Collections.synchronizedList(mutableListOf<Int>())
     private var meshAdvertiseJob: Job? = null
     private var lastDisplayName: String = ""
+    @Volatile private var isStartingAdvertising = false
 
     private var isReceiverRegistered = false
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
@@ -275,7 +277,7 @@ class BluetoothHandler(private val context: Context) {
                 return
             }
             
-            val manufacturerData = scanRecord.getManufacturerSpecificData(SupportMenu.USER_MASK) ?: return
+            val manufacturerData = scanRecord.getManufacturerSpecificData(PEER_MANUFACTURER_ID) ?: return
             if (manufacturerData.size >= 8) {
                 val peerUuid = manufacturerData.copyOfRange(0, 8).toHexString()
                 val passcodeByte = if (manufacturerData.size >= 9) manufacturerData[8].toInt() else 0
@@ -319,11 +321,15 @@ class BluetoothHandler(private val context: Context) {
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
             _isAdvertising.value = true
+            isStartingAdvertising = false
         }
 
         override fun onStartFailure(errorCode: Int) {
             _isAdvertising.value = false
-            showToast("Advertising failed with error $errorCode")
+            isStartingAdvertising = false
+            if (errorCode != 3) {
+                showToast("Advertising failed with error $errorCode")
+            }
         }
     }
 
@@ -551,6 +557,7 @@ class BluetoothHandler(private val context: Context) {
             }
         }
 
+
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             try {
                 if (characteristic.uuid == MESSAGE_CHARACTERISTIC_UUID) {
@@ -607,6 +614,7 @@ class BluetoothHandler(private val context: Context) {
         
         val filters = listOf(
             ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build(),
+            ScanFilter.Builder().setManufacturerData(PEER_MANUFACTURER_ID, byteArrayOf()).build(),
             ScanFilter.Builder().setServiceUuid(ParcelUuid(UUID.fromString(MESH_SERVICE_UUID_STR))).build()
         )
 
@@ -632,18 +640,29 @@ class BluetoothHandler(private val context: Context) {
     }
 
     fun hasPermissions(): Boolean {
-        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
-        } else {
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+        val permissions = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+            permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
         }
+        permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
         return permissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
     }
 
     fun isLocationEnabled(): Boolean {
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
-                locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            locationManager.isLocationEnabled
+        } else {
+            @Suppress("DEPRECATION")
+            android.provider.Settings.Secure.getInt(
+                context.contentResolver,
+                android.provider.Settings.Secure.LOCATION_MODE,
+                android.provider.Settings.Secure.LOCATION_MODE_OFF
+            ) != android.provider.Settings.Secure.LOCATION_MODE_OFF
+        }
     }
 
     fun clearDiscoveredPeers() {
@@ -711,7 +730,8 @@ class BluetoothHandler(private val context: Context) {
             return
         }
 
-        if (_isAdvertising.value) return
+        if (_isAdvertising.value || isStartingAdvertising) return
+        isStartingAdvertising = true
 
         scope.launch {
             try {
@@ -762,7 +782,7 @@ class BluetoothHandler(private val context: Context) {
                 }
 
                 val data = AdvertiseData.Builder().addServiceUuid(ParcelUuid(SERVICE_UUID)).build()
-                val scanResponseData = AdvertiseData.Builder().addManufacturerData(SupportMenu.USER_MASK, manufacturerData).build()
+                val scanResponseData = AdvertiseData.Builder().addManufacturerData(PEER_MANUFACTURER_ID, manufacturerData).build()
 
                 try {
                     advertiserObj.startAdvertising(settings, data, scanResponseData, advertiseCallback)
@@ -778,13 +798,14 @@ class BluetoothHandler(private val context: Context) {
     }
 
     fun stopAdvertising() {
-        if (!hasPermissions() || !_isAdvertising.value) return
+        if (!hasPermissions()) return
         try {
             advertiser?.stopAdvertising(advertiseCallback)
-            _isAdvertising.value = false
         } catch (e: Exception) {
             Log.e(TAG, "stopAdvertising failed", e)
         }
+        _isAdvertising.value = false
+        isStartingAdvertising = false
     }
 
     private val meshAdvertiseCallback = object : AdvertiseCallback() {
@@ -1061,7 +1082,7 @@ class BluetoothHandler(private val context: Context) {
                 }
             }
 
-            val maxPayloadSize = negotiatedMtu - 3 - 3 // 3 bytes BLE overhead, 3 bytes chunk header
+            val maxPayloadSize = java.lang.Math.min(negotiatedMtu - 6, 509) // GATT attribute value is capped at 512 bytes, overhead is 3 bytes BLE + 3 bytes chunk header
             val rawChunks = payload.toList().chunked(maxPayloadSize).map { it.toByteArray() }
             val totalChunks = rawChunks.size
             val chunks = rawChunks.mapIndexed { index, data ->
@@ -1219,7 +1240,7 @@ class BluetoothHandler(private val context: Context) {
                 System.arraycopy(publicKeyBytes, 0, this, 17, publicKeyBytes.size)
             }
 
-            val maxPayloadSize = negotiatedMtu - 3 - 3 // 3 bytes BLE overhead, 3 bytes chunk header
+            val maxPayloadSize = java.lang.Math.min(negotiatedMtu - 6, 509) // GATT attribute value is capped at 512 bytes, overhead is 3 bytes BLE + 3 bytes chunk header
             val rawChunks = payload.toList().chunked(maxPayloadSize).map { it.toByteArray() }
             val totalChunks = rawChunks.size
             val chunks = rawChunks.mapIndexed { index, data ->
