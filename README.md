@@ -1,4 +1,4 @@
-# 🌐 BlueMesh
+# BlueMesh
 
 BlueMesh is an offline messaging application for Android. It lets you discover, connect, and chat with nearby devices using Bluetooth Low Energy (BLE)—**completely independent of the internet, cellular networks, or Wi-Fi**. 
 
@@ -6,17 +6,17 @@ Whether you are in a remote area, an outdoor adventure, or in an emergency scena
 
 ---
 
-## ✨ Features
+## Features
 
-### 👥 For Everyday Users
-* **📶 No Internet Needed**: Send text messages directly to nearby phones. No SIM cards, cellular data, or Wi-Fi required.
-* **🔒 Passcode Protection**: Secure the app with a 4-digit PIN to prevent unauthorized access to your local chats.
-* **🔄 Send Later (Offline Queue)**: If a friend walks away, you can still type and queue your messages. The app automatically sends them the moment they are back in range.
-* **📍 Proximity Detection**: See an estimate of how far away your friends are based on Bluetooth signal strength (only shown if they choose to share their location status).
-* **🔋 Battery Friendly**: Intelligently manages Bluetooth scanning in the background to save your phone's battery.
-* **🎨 Modern & Smooth UI**: Beautiful dark theme with seamless transitions and automatic keyboard adjustments.
+### For Everyday Users
+* **Internet-Free Messaging**: Send text messages directly to nearby phones. No SIM cards, cellular data, or Wi-Fi required.
+* **Passcode Protection**: Secure the app with a 4-digit PIN to prevent unauthorized access to your local chats.
+* **Offline Queueing (Send Later)**: If a friend walks away, you can still type and queue your messages. The app automatically sends them the moment they are back in range.
+* **Proximity Detection**: See an estimate of how far away your friends are based on Bluetooth signal strength (only shown if they choose to share their location status).
+* **Battery Optimization**: Intelligently manages Bluetooth scanning in the background to save your phone's battery.
+* **Modern User Interface**: Clean dark theme with seamless transitions and automatic keyboard adjustments.
 
-### 🛠️ For Tech Enthusiasts & Developers
+### For Tech Enthusiasts & Developers
 * **Direct P2P GATT Connections**: Establishes point-to-point BLE GATT connections for reliable, high-throughput transmission.
 * **Flooding Mesh Relay Support**: Extends communication range using inexpensive ESP32 hardware relays that repeat messages across a local flooding mesh.
 * **Secure E2EE (AES-GCM)**: Features optional End-to-End Encryption (E2EE) with Elliptic-Curve Diffie-Hellman (ECDH) key exchange and AES-GCM-128 encryption.
@@ -25,7 +25,7 @@ Whether you are in a remote area, an outdoor adventure, or in an emergency scena
 
 ---
 
-## 📱 User Guide
+## User Guide
 
 ### 1. Getting Started
 1. **Set Up Your Profile**: Enter your screen display name (this is what nearby users will see).
@@ -43,7 +43,7 @@ Whether you are in a remote area, an outdoor adventure, or in an emergency scena
 
 ---
 
-## 📡 Flooding Mesh Relay Protocol (ESP32)
+## Flooding Mesh Relay Protocol (ESP32)
 
 To extend the range of the offline network, BlueMesh supports standalone ESP32 hardware routing nodes using a flooding protocol:
 
@@ -55,7 +55,7 @@ To extend the range of the offline network, BlueMesh supports standalone ESP32 h
 
 ---
 
-## 💻 Developer & Tech Stack
+## Developer Guide & Tech Stack
 
 ### Technology Stack
 * **Language**: Kotlin 1.9+ (Android Client), C++ (ESP32 Firmware)
@@ -90,7 +90,7 @@ To extend the range of the offline network, BlueMesh supports standalone ESP32 h
 
 ---
 
-## 🔨 Building & Running
+## Building & Running
 
 ### Android App
 1. Open the project in **Android Studio**.
