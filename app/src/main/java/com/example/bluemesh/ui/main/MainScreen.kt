@@ -428,7 +428,7 @@ fun PeerItem(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (isPasscodeEnabled && peer.hasPasscode && !isContact) {
+                if (!isContact) {
                     IconButton(
                         onClick = onSaveClick,
                         colors = IconButtonDefaults.iconButtonColors(contentColor = Color(0xFF10B981))
