@@ -23,6 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.Refresh
 import com.example.bluemesh.data.DefaultDataRepository
 import androidx.compose.runtime.DisposableEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -39,6 +40,9 @@ fun SecurityScreen(
     val repository = remember { DefaultDataRepository.getInstance(context.applicationContext) }
     var isPasscodeEnabled by remember { mutableStateOf(repository.isPasscodeEnabled()) }
     var isShareLocationEnabled by remember { mutableStateOf(repository.isShareLocationEnabled()) }
+    var showResetDialog by remember { mutableStateOf(false) }
+    var resetPasscodeVal by remember { mutableStateOf("") }
+    var resetErrorText by remember { mutableStateOf("") }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -274,6 +278,65 @@ fun SecurityScreen(
                             )
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    HorizontalDivider(
+                        color = Color(0xFF334155)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Reset User ID row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showResetDialog = true
+                            }
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(
+                                        color = Color(0xFFEF4444).copy(alpha = 0.2f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Reset ID",
+                                    tint = Color(0xFFEF4444)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column {
+                                Text(
+                                    text = "Reset User ID",
+                                    color = Color.White,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Generate a new static identifier",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = "Navigate",
+                            tint = Color(0xFF64748B)
+                        )
+                    }
                 }
             }
 
@@ -305,6 +368,93 @@ fun SecurityScreen(
                     fontSize = 14.sp
                 )
             }
+        }
+
+        if (showResetDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showResetDialog = false
+                    resetPasscodeVal = ""
+                    resetErrorText = ""
+                },
+                containerColor = Color(0xFF1D263B),
+                title = {
+                    Text(
+                        text = "Reset User ID",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = "Warning: Resetting your User ID will remove your connection to people who added you to their contacts. They will not be able to message you until they add your new ID.",
+                            color = Color(0xFFEF4444),
+                            fontSize = 14.sp,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        OutlinedTextField(
+                            value = resetPasscodeVal,
+                            onValueChange = {
+                                if (it.length <= 4 && it.all { char -> char.isDigit() }) {
+                                    resetPasscodeVal = it
+                                    resetErrorText = ""
+                                }
+                            },
+                            label = { Text("Enter Passcode", color = Color(0xFF94A3B8)) },
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.NumberPassword
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF3B82F6),
+                                unfocusedBorderColor = Color(0xFF334155),
+                                focusedLabelColor = Color(0xFF3B82F6),
+                                cursorColor = Color(0xFF3B82F6),
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            ),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (resetErrorText.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = resetErrorText,
+                                color = Color(0xFFEF4444),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            if (repository.resetUserUuid(resetPasscodeVal)) {
+                                android.widget.Toast.makeText(context, "User ID successfully reset", android.widget.Toast.LENGTH_SHORT).show()
+                                showResetDialog = false
+                                resetPasscodeVal = ""
+                                resetErrorText = ""
+                            } else {
+                                resetErrorText = "Incorrect passcode"
+                            }
+                        }
+                    ) {
+                        Text("Confirm Reset", color = Color(0xFFEF4444))
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showResetDialog = false
+                            resetPasscodeVal = ""
+                            resetErrorText = ""
+                        }
+                    ) {
+                        Text("Cancel", color = Color.White)
+                    }
+                }
+            )
         }
     }
 }

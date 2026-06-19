@@ -92,13 +92,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     override val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
 
     init {
-        if (isPasscodeEnabled()) {
-            if (getUserUuid().isEmpty()) {
-                prefs.edit().putString("user_uuid", UUID.randomUUID().toString()).apply()
-            }
-        } else {
-            prefs.edit().putString("user_uuid", UUID.randomUUID().toString()).apply()
-        }
+        // User UUID is generated dynamically only when passcode is created or reset
 
         // Collect ACKs from peer and mark messages as SENT
         scope.launch(Dispatchers.IO) {
@@ -737,10 +731,12 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             .putLong("lockout_until", 0L)
             .remove("passcode_salt")
             .apply()
+        val currentUuid = getUserUuid()
+        val finalUuid = if (currentUuid.isEmpty()) UUID.randomUUID().toString() else currentUuid
         prefs.edit()
             .putString("passcode_hash", hashPin(pin))
             .putBoolean("is_passcode_enabled", true)
-            .putString("user_uuid", UUID.randomUUID().toString())
+            .putString("user_uuid", finalUuid)
             .apply()
         getDisplayName().let {
             if (it.isNotEmpty()) {
@@ -821,6 +817,18 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 stopAdvertising()
             }
         }
+    }
+
+    override fun resetUserUuid(passcode: String): Boolean {
+        if (verifyPasscode(passcode)) {
+            prefs.edit().putString("user_uuid", java.util.UUID.randomUUID().toString()).apply()
+            if (isDiscoverableEnabled()) {
+                bluetoothHandler.stopAdvertising()
+                bluetoothHandler.startAdvertising(getDisplayName())
+            }
+            return true
+        }
+        return false
     }
 
 
