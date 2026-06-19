@@ -67,7 +67,7 @@ fun MainScreen(
                 Lifecycle.Event.ON_RESUME -> {
                     isShareLocationEnabled = repository.isShareLocationEnabled()
                     isDiscoverable = repository.isDiscoverableEnabled()
-                    viewModel.startScanning()
+                    viewModel.startScanning(clearList = false)
                     if (repository.isDiscoverableEnabled()) {
                         viewModel.toggleDiscoverability(true)
                     }
@@ -203,7 +203,7 @@ fun MainScreen(
                     )
 
                     IconButton(
-                        onClick = { viewModel.startScanning() },
+                        onClick = { viewModel.startScanning(clearList = true) },
                         colors = IconButtonDefaults.iconButtonColors(contentColor = Color(0xFF3B82F6))
                     ) {
                         Icon(imageVector = Icons.Default.Refresh, contentDescription = "Rescan")

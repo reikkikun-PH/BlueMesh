@@ -13,8 +13,10 @@ class MainScreenViewModel(private val dataRepository: DataRepository) : ViewMode
     val displayName: String
         get() = dataRepository.getDisplayName()
 
-    fun startScanning() {
-        dataRepository.clearDiscoveredPeers()
+    fun startScanning(clearList: Boolean = false) {
+        if (clearList) {
+            dataRepository.clearDiscoveredPeers()
+        }
         dataRepository.startScan()
     }
 
