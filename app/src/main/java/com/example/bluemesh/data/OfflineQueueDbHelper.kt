@@ -8,6 +8,10 @@ import com.example.bluemesh.data.models.ChatMessage
 
 class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
 
+    init {
+        setWriteAheadLoggingEnabled(true)
+    }
+
     companion object {
         private const val DATABASE_NAME = "bluemesh_offline.db"
         private const val DATABASE_VERSION = 3
@@ -90,11 +94,9 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
     }
 
     private fun resolveCanonicalUuid(contactUuid: String): String {
-        val normTarget = contactUuid.replace("-", "").lowercase()
         val contacts = getContactsList()
         val match = contacts.find {
-            val dbNorm = it.first.replace("-", "").lowercase()
-            dbNorm == normTarget || (normTarget.length == 16 && dbNorm.startsWith(normTarget)) || (dbNorm.length == 16 && normTarget.startsWith(dbNorm))
+            com.example.bluemesh.utils.uuidsMatch(it.first, contactUuid)
         }
         return match?.first ?: contactUuid
     }
@@ -177,6 +179,18 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
         return list
     }
 
+    fun isDuplicateMessage(contactUuid: String, timestamp: Long): Boolean {
+        val resolvedUuid = resolveCanonicalUuid(contactUuid)
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT 1 FROM QueuedMessages WHERE contact_uuid = ? AND timestamp = ? AND is_from_me = 0",
+            arrayOf(resolvedUuid, timestamp.toString())
+        )
+        val exists = cursor.count > 0
+        cursor.close()
+        return exists
+    }
+
     fun updateMessageContactUuid(oldUuid: String, newUuid: String) {
         val db = writableDatabase
         val values = ContentValues().apply {
@@ -191,6 +205,14 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
             put("status", "SENT")
         }
         db.update("QueuedMessages", values, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun markMessageAsSent(timestamp: Long) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("status", "SENT")
+        }
+        db.update("QueuedMessages", values, "timestamp = ? AND is_from_me = 1", arrayOf(timestamp.toString()))
     }
 
     fun saveSessionKey(uuid: String, sessionKey: String) {

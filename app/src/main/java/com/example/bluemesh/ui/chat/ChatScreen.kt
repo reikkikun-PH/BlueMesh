@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,6 +31,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.example.bluemesh.data.models.ConnectionStatus
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun ChatScreen(
@@ -49,19 +51,19 @@ fun ChatScreen(
     val repository = remember { DefaultDataRepository.getInstance(context) }
     val discoveredPeers by repository.discoveredPeers.collectAsStateWithLifecycle()
     val isOfficial = remember(discoveredPeers, peerUuid) {
-        val peerNorm = peerUuid.replace("-", "").lowercase()
         discoveredPeers.find {
-            val dNorm = it.uuid.replace("-", "").lowercase()
-            dNorm == peerNorm || (peerNorm.length == 16 && dNorm.startsWith(peerNorm)) || (dNorm.length == 16 && peerNorm.startsWith(dNorm))
+            com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid)
         }?.isOfficial == true ||
         repository.getContacts().find {
-            val cNorm = it.uuid.replace("-", "").lowercase()
-            cNorm == peerNorm || (peerNorm.length == 16 && cNorm.startsWith(peerNorm)) || (cNorm.length == 16 && peerNorm.startsWith(cNorm))
+            com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid)
         }?.isOfficial == true
     }
 
     var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+
+    var isSending by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     val lifecycleOwner = LocalLifecycleOwner.current
     val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
@@ -88,16 +90,7 @@ fun ChatScreen(
         }
     }
 
-    if (!isPasscodeEnabled) {
-        LaunchedEffect(status) {
-            if (status == ConnectionStatus.DISCONNECTED) {
-                delay(30000)
-                repository.clearChatHistory()
-                repository.setActiveChat("")
-                onBackClick()
-            }
-        }
-    }
+
 
     // Auto-scroll to bottom when new messages arrive
     LaunchedEffect(messages.size) {
@@ -219,23 +212,35 @@ fun ChatScreen(
 
                 IconButton(
                     onClick = {
-                        if (textInput.isNotBlank()) {
-                            val sent = viewModel.sendMessage(textInput.trim())
-                            if (sent) {
-                                textInput = ""
+                        if (textInput.isNotBlank() && !isSending) {
+                            val messageText = textInput.trim()
+                            textInput = ""
+                            isSending = true
+                            viewModel.sendMessage(messageText)
+                            coroutineScope.launch {
+                                delay(600) // 600ms cooldown to match BLE transmission rate
+                                isSending = false
                             }
                         }
                     },
-                    enabled = textInput.isNotBlank(),
+                    enabled = textInput.isNotBlank() && !isSending,
                     colors = IconButtonDefaults.iconButtonColors(
-                        containerColor = if (textInput.isNotBlank()) Color(0xFF3B82F6) else Color(0xFF1D263B),
+                        containerColor = if (textInput.isNotBlank() && !isSending) Color(0xFF3B82F6) else Color(0xFF1D263B),
                         contentColor = Color.White,
                         disabledContainerColor = Color(0xFF1D263B),
                         disabledContentColor = Color(0xFF475569)
                     ),
                     modifier = Modifier.size(48.dp)
                 ) {
-                    Icon(imageVector = Icons.Default.Send, contentDescription = "Send")
+                    if (isSending) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    } else {
+                        Icon(imageVector = Icons.Default.Send, contentDescription = "Send")
+                    }
                 }
             }
         }
@@ -256,7 +261,7 @@ fun ChatBubble(message: ChatMessage) {
         modifier = Modifier.fillMaxWidth(),
         contentAlignment = alignment
     ) {
-        Box(
+        Column(
             modifier = Modifier
                 .widthIn(max = 280.dp)
                 .background(
@@ -276,6 +281,29 @@ fun ChatBubble(message: ChatMessage) {
                 fontSize = 15.sp,
                 lineHeight = 20.sp
             )
+            if (message.isFromMe) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Row(
+                    modifier = Modifier.align(Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (message.status == "PENDING") {
+                        Text(
+                            text = "Sending…",
+                            color = Color.White.copy(alpha = 0.6f),
+                            fontSize = 10.sp
+                        )
+                    } else if (message.status == "SENT") {
+                        Icon(
+                            imageVector = androidx.compose.material.icons.Icons.Default.Check,
+                            contentDescription = "Sent",
+                            tint = Color.White.copy(alpha = 0.6f),
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
+                }
+            }
+
         }
     }
 }

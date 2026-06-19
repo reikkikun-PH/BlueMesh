@@ -183,7 +183,7 @@ fun ContactsScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         items(contactsList, key = { it.uuid }) { contact ->
-                            val isOnline = discoveredPeers.any { it.uuid == contact.uuid }
+                            val isOnline = discoveredPeers.any { com.example.bluemesh.utils.uuidsMatch(it.uuid, contact.uuid) }
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(16.dp),
