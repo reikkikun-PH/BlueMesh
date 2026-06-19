@@ -22,6 +22,7 @@ import androidx.core.internal.view.SupportMenu
 import com.example.bluemesh.data.models.BluetoothPeer
 import com.example.bluemesh.data.models.ChatMessage
 import com.example.bluemesh.data.models.ConnectionStatus
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -88,7 +89,7 @@ class BluetoothHandler(private val context: Context) {
     private var lastScanStartTime: Long = 0
     private var discoveryRetryCount = 0
     @Volatile private var negotiatedMtu = 23
-    private val writeAck = kotlinx.coroutines.channels.Channel<Boolean>(1)
+    @Volatile private var currentWriteDeferred: CompletableDeferred<Boolean>? = null
     
     private val messageIdCache = java.util.Collections.synchronizedList(mutableListOf<Int>())
     private var meshAdvertiseJob: Job? = null
@@ -438,6 +439,8 @@ class BluetoothHandler(private val context: Context) {
                     _isReady.value = false
                     negotiatedMtu = 23
                     _connectionStatus.value = ConnectionStatus.DISCONNECTED
+                    currentWriteDeferred?.complete(false)
+                    currentWriteDeferred = null
                     return
                 }
 
@@ -537,7 +540,7 @@ class BluetoothHandler(private val context: Context) {
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             try {
-                writeAck.trySend(status == BluetoothGatt.GATT_SUCCESS)
+                currentWriteDeferred?.complete(status == BluetoothGatt.GATT_SUCCESS)
             } catch (e: Exception) {
                 Log.e(TAG, "Error in onCharacteristicWrite", e)
             }
@@ -972,6 +975,8 @@ class BluetoothHandler(private val context: Context) {
 
     fun disconnect() {
         connectionTimeoutJob?.cancel()
+        currentWriteDeferred?.complete(false)
+        currentWriteDeferred = null
         val gatt = bluetoothGatt ?: return
         if (isDisconnecting.get()) return
         isDisconnecting.set(true)
@@ -1050,8 +1055,9 @@ class BluetoothHandler(private val context: Context) {
         val gattClient = bluetoothGatt
         if (gattClient != null && charClient != null) {
             var success = true
-            while (writeAck.tryReceive().isSuccess) {}
             for (chunk in chunks) {
+                val deferred = CompletableDeferred<Boolean>()
+                currentWriteDeferred = deferred
                 val writeSuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     gattClient.writeCharacteristic(charClient, chunk, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
                 } else {
@@ -1063,10 +1069,12 @@ class BluetoothHandler(private val context: Context) {
                     gattClient.writeCharacteristic(charClient)
                 }
                 if (!writeSuccess) {
+                    currentWriteDeferred = null
                     success = false
                     break
                 }
-                val callbackResult = withTimeoutOrNull<Boolean>(2000) { writeAck.receive() }
+                val callbackResult = withTimeoutOrNull(2000) { deferred.await() }
+                currentWriteDeferred = null
                 if (callbackResult != true) {
                     success = false
                     break
