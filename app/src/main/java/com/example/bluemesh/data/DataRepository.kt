@@ -46,4 +46,5 @@ interface DataRepository {
     fun setShareLocationEnabled(enabled: Boolean)
     fun isDiscoverableEnabled(): Boolean
     fun setDiscoverableEnabled(enabled: Boolean)
+    fun resetUserUuid(passcode: String): Boolean
 }
