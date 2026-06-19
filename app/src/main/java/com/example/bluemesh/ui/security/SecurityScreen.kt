@@ -145,21 +145,11 @@ fun SecurityScreen(
                             }
                         }
 
-                        Switch(
-                            checked = isPasscodeEnabled,
-                            onCheckedChange = { checked ->
-                                if (checked) {
-                                    onNavigateToLock("setup")
-                                } else {
-                                    onNavigateToLock("verify")
-                                }
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = Color(0xFF3B82F6),
-                                uncheckedThumbColor = Color(0xFF94A3B8),
-                                uncheckedTrackColor = Color(0xFF334155)
-                            )
+                        Text(
+                            text = "Required",
+                            color = Color(0xFF3B82F6),
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
                         )
                     }
 
@@ -285,6 +275,35 @@ fun SecurityScreen(
                         )
                     }
                 }
+            }
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            val versionName = remember {
+                try {
+                    val packageInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        context.packageManager.getPackageInfo(context.packageName, android.content.pm.PackageManager.PackageInfoFlags.of(0))
+                    } else {
+                        @Suppress("DEPRECATION")
+                        context.packageManager.getPackageInfo(context.packageName, 0)
+                    }
+                    packageInfo.versionName ?: "28.22"
+                } catch (e: Exception) {
+                    "28.22"
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "BlueMesh Version $versionName",
+                    color = Color(0xFF64748B),
+                    fontSize = 14.sp
+                )
             }
         }
     }

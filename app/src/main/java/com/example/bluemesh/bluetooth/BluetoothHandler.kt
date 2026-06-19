@@ -277,6 +277,13 @@ class BluetoothHandler(private val context: Context) {
             if (manufacturerData.size >= 8) {
                 val peerUuid = manufacturerData.copyOfRange(0, 8).toHexString()
                 val passcodeByte = if (manufacturerData.size >= 9) manufacturerData[8].toInt() else 0
+                val isGoodbye = (passcodeByte and 0x08) != 0
+                if (isGoodbye) {
+                    _discoveredPeers.update { current ->
+                        current.filterNot { it.address == device.address || com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid) }
+                    }
+                    return
+                }
                 val hasPasscode = (passcodeByte and 0x03) != 0
                 val isOfficial = (passcodeByte and 0x02) != 0
                 val allowTracking = (passcodeByte and 0x04) != 0
@@ -699,7 +706,7 @@ class BluetoothHandler(private val context: Context) {
         stopPhysicalScan()
     }
 
-    fun startAdvertising(displayName: String) {
+    fun startAdvertising(displayName: String, isGoodbye: Boolean = false) {
         lastDisplayName = displayName
         if (!hasPermissions()) {
             _isAdvertising.value = false
@@ -760,9 +767,12 @@ class BluetoothHandler(private val context: Context) {
 
                 val isPasscode = prefs.getBoolean("is_passcode_enabled", false)
                 val isOfficial = false
-                val isShareLocation = prefs.getBoolean("is_share_location_enabled", false)
+                val isShareLocation = prefs.getBoolean("is_share_location_enabled", true)
                 
-                val passcodeFlag = ((if (isOfficial) 2 else if (isPasscode) 1 else 0) or (if (isShareLocation) 4 else 0)).toByte()
+                var passcodeFlag = ((if (isOfficial) 2 else if (isPasscode) 1 else 0) or (if (isShareLocation) 4 else 0)).toByte()
+                if (isGoodbye) {
+                    passcodeFlag = (passcodeFlag.toInt() or 0x08).toByte()
+                }
 
                 val manufacturerData = ByteArray(9 + nameBytes.size).apply {
                     System.arraycopy(shortUuidBytes, 0, this, 0, 8)
@@ -795,6 +805,25 @@ class BluetoothHandler(private val context: Context) {
         }
         _isAdvertising.value = false
         isStartingAdvertising = false
+    }
+
+    fun stopAdvertisingWithGoodbye() {
+        if (!hasPermissions()) return
+        val name = lastDisplayName
+        if (name.isNotEmpty() && _isAdvertising.value) {
+            stopAdvertising()
+            scope.launch {
+                try {
+                    startAdvertising(name, isGoodbye = true)
+                    delay(800)
+                    stopAdvertising()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in stopAdvertisingWithGoodbye", e)
+                }
+            }
+        } else {
+            stopAdvertising()
+        }
     }
 
     private val meshAdvertiseCallback = object : AdvertiseCallback() {

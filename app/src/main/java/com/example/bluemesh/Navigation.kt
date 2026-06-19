@@ -30,7 +30,7 @@ fun MainNavigation() {
     val passcodeEnabled = repository.isPasscodeEnabled()
 
     val startDestination = if (initialName.isEmpty()) Setup 
-                           else if (isVolunteersEdition && !passcodeEnabled) SetupPasscode 
+                           else if (!passcodeEnabled) SetupPasscode 
                            else Main
     val backStack = rememberNavBackStack(startDestination)
 
@@ -52,7 +52,7 @@ fun MainNavigation() {
             entry<Setup> {
                 SetupScreen(
                     onSetupComplete = {
-                        if (isVolunteersEdition && !repository.isPasscodeEnabled()) {
+                        if (!repository.isPasscodeEnabled()) {
                             backStack.add(SetupPasscode)
                         } else {
                             backStack.add(Main)

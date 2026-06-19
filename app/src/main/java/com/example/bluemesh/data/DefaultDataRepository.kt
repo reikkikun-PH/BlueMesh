@@ -795,7 +795,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         }
     }
 
-    override fun isShareLocationEnabled(): Boolean = prefs.getBoolean("is_share_location_enabled", false)
+    override fun isShareLocationEnabled(): Boolean = prefs.getBoolean("is_share_location_enabled", true)
 
     override fun setShareLocationEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("is_share_location_enabled", enabled).apply()
@@ -815,7 +815,11 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 startAdvertising(name)
             }
         } else {
-            stopAdvertising()
+            if (bluetoothHandler is com.example.bluemesh.bluetooth.BluetoothHandler) {
+                bluetoothHandler.stopAdvertisingWithGoodbye()
+            } else {
+                stopAdvertising()
+            }
         }
     }
 
