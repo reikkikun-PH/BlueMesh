@@ -6,7 +6,10 @@ import com.example.bluemesh.data.models.ChatMessage
 import com.example.bluemesh.data.models.ConnectionStatus
 import kotlinx.coroutines.flow.StateFlow
 
+// DataRepository interface is kept to allow mocking/test doubles during unit testing and to decouple the UI layer from the Bluetooth/DB details.
 interface DataRepository {
+    fun getLockoutTimeRemaining(): Long
+
     val discoveredPeers: StateFlow<List<BluetoothPeer>>
     val connectionStatus: StateFlow<ConnectionStatus>
     val isReady: StateFlow<Boolean>
@@ -24,6 +27,8 @@ interface DataRepository {
     fun getDisplayName(): String
     fun saveDisplayName(name: String)
     fun clearChatHistory()
+    fun clearDiscoveredPeers()
+
 
     fun getUserUuid(): String
     fun getContacts(): List<BluetoothPeer>

@@ -24,6 +24,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.filled.GpsFixed
 import com.example.bluemesh.data.DefaultDataRepository
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.Lifecycle
 
 @Composable
 fun SecurityScreen(
@@ -33,8 +37,21 @@ fun SecurityScreen(
 ) {
     val context = LocalContext.current
     val repository = remember { DefaultDataRepository.getInstance(context.applicationContext) }
-    val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
+    var isPasscodeEnabled by remember { mutableStateOf(repository.isPasscodeEnabled()) }
     var isShareLocationEnabled by remember { mutableStateOf(repository.isShareLocationEnabled()) }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isPasscodeEnabled = repository.isPasscodeEnabled()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     Box(
         modifier = Modifier

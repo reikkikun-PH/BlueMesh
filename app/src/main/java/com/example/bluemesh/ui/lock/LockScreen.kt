@@ -32,6 +32,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.bluemesh.data.DefaultDataRepository
+import kotlinx.coroutines.delay
 
 @Composable
 fun LockScreen(
@@ -74,14 +75,38 @@ fun LockScreen(
         }
     }
 
+    LaunchedEffect(Unit) {
+        while (true) {
+            val remaining = repository.getLockoutTimeRemaining()
+            if (remaining > 0) {
+                val seconds = (remaining / 1000) + 1
+                errorMessage = "Too many incorrect attempts. Try again in $seconds seconds."
+            } else if (errorMessage.startsWith("Too many incorrect attempts")) {
+                errorMessage = ""
+            }
+            delay(1000)
+        }
+    }
+
     val onSubmitClick: () -> Unit = {
-        if (pinInput.length == 4) {
+        val remaining = repository.getLockoutTimeRemaining()
+        if (remaining > 0) {
+            val seconds = (remaining / 1000) + 1
+            errorMessage = "Too many incorrect attempts. Try again in $seconds seconds."
+            pinInput = ""
+        } else if (pinInput.length == 4) {
             when (mode) {
                 "unlock", "verify", "verify_change" -> {
                     if (repository.verifyPasscode(pinInput)) {
                         onSuccess()
                     } else {
-                        errorMessage = "Incorrect Passcode"
+                        val newRemaining = repository.getLockoutTimeRemaining()
+                        if (newRemaining > 0) {
+                            val seconds = (newRemaining / 1000) + 1
+                            errorMessage = "Too many incorrect attempts. Try again in $seconds seconds."
+                        } else {
+                            errorMessage = "Incorrect Passcode"
+                        }
                         pinInput = ""
                     }
                 }
