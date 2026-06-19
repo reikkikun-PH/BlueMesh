@@ -38,3 +38,10 @@
 -keepclassmembers class * {
     *** serializer(...);
 }
+
+# Keep Bluetooth, GATT, and BroadcastReceiver callbacks called by the Android system
+-keep class * extends android.bluetooth.BluetoothGattCallback { *; }
+-keep class * extends android.bluetooth.BluetoothGattServerCallback { *; }
+-keep class * extends android.bluetooth.le.ScanCallback { *; }
+-keep class * extends android.bluetooth.le.AdvertiseCallback { *; }
+-keep class * extends android.content.BroadcastReceiver { *; }
