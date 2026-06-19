@@ -53,7 +53,6 @@ fun MainScreen(
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val isAdvertising by viewModel.isAdvertising.collectAsStateWithLifecycle()
     val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
-    var isShareLocationEnabled by remember { mutableStateOf(repository.isShareLocationEnabled()) }
     var isDiscoverable by remember { mutableStateOf(repository.isDiscoverableEnabled()) }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -65,7 +64,6 @@ fun MainScreen(
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
-                    isShareLocationEnabled = repository.isShareLocationEnabled()
                     isDiscoverable = repository.isDiscoverableEnabled()
                     viewModel.startScanning(clearList = false)
                     if (repository.isDiscoverableEnabled()) {
@@ -349,7 +347,6 @@ fun MainScreen(
                                 peer = peer,
                                 isPasscodeEnabled = isPasscodeEnabled,
                                 isContact = isContactState,
-                                isLocalShareLocationEnabled = isShareLocationEnabled,
                                 onSaveClick = {
                                     repository.saveContact(peer.uuid, peer.name)
                                     isContactState = true
@@ -371,7 +368,6 @@ fun PeerItem(
     peer: BluetoothPeer,
     isPasscodeEnabled: Boolean,
     isContact: Boolean,
-    isLocalShareLocationEnabled: Boolean,
     onSaveClick: () -> Unit,
     onClick: () -> Unit
 ) {
@@ -415,7 +411,7 @@ fun PeerItem(
                     color = Color(0xFF64748B),
                     fontSize = 13.sp
                 )
-                if (peer.rssi != -100 && peer.allowTracking && isLocalShareLocationEnabled) {
+                if (peer.rssi != -100 && peer.allowTracking) {
                     val dist = peer.estimatedDistance
                     val distFormatted = if (dist < 1.0) "Within 1m" else "Est. " + ((dist * 10).toInt() / 10.0) + "m"
                     Text(

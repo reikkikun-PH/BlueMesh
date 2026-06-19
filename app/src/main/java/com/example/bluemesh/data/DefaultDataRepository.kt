@@ -641,6 +641,9 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
     override fun setActiveChat(uuid: String) {
         activeChatUuid = uuid
+        if (uuid.isEmpty()) {
+            disconnect()
+        }
         _chatMessages.value = if (isPasscodeEnabled()) {
             dbHelper.getMessagesForContact(uuid)
         } else {
