@@ -242,30 +242,27 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             scope.launch(Dispatchers.IO) {
                 try {
                     bluetoothHandler.updatePeerUuid(senderUuid)
-                    val senderNorm = com.example.bluemesh.utils.normalizeUuid(senderUuid)
                     
-                    if (isPasscodeEnabled()) {
+                    // Upgrade any matching contact UUID in database tables
+                    try {
+                        dbHelper.upgradeContactIfNeeded(senderUuid)
+                        
+                        // If there was an active session key for the short UUID in memory, migrate it to the full UUID
                         val contacts = contactsDbCache
                         val storedContact = contacts.find {
-                            com.example.bluemesh.utils.uuidsMatch(it.first, senderUuid)
+                            it.first != senderUuid && com.example.bluemesh.utils.uuidsMatch(it.first, senderUuid)
                         }
                         if (storedContact != null) {
-                            val storedUuid = storedContact.first
-                            val storedNorm = com.example.bluemesh.utils.normalizeUuid(storedUuid)
-                            if (storedNorm.length == 16 && senderNorm.length > 16) {
-                                try {
-                                    dbHelper.upgradeContactUuid(storedUuid, senderUuid)
-                                    reloadContactsCache()
-                                } catch (e: Exception) {
-                                    Log.e("DataRepository", "Error upgrading contact UUID in database", e)
-                                }
-                                val existingKey = sessionKeys[storedUuid]
-                                if (existingKey != null) {
-                                    sessionKeys[senderUuid] = existingKey
-                                    sessionKeys.remove(storedUuid)
-                                }
+                            val oldUuid = storedContact.first
+                            val existingKey = sessionKeys[oldUuid]
+                            if (existingKey != null) {
+                                sessionKeys[senderUuid] = existingKey
+                                sessionKeys.remove(oldUuid)
                             }
                         }
+                        reloadContactsCache()
+                    } catch (e: Exception) {
+                        Log.e("DataRepository", "Error upgrading contact UUID on key exchange", e)
                     }
 
                     if (com.example.bluemesh.utils.uuidsMatch(activeChatUuid, senderUuid)) {

@@ -76,16 +76,12 @@ fun ChatScreen(
                         viewModel.connect()
                     }
                 }
-                Lifecycle.Event.ON_STOP -> {
-                    viewModel.disconnect()
-                }
                 else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            viewModel.disconnect()
             repository.setActiveChat("")
         }
     }
@@ -120,7 +116,6 @@ fun ChatScreen(
             ) {
                 IconButton(
                     onClick = {
-                        viewModel.disconnect()
                         onBackClick()
                     },
                     colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White)

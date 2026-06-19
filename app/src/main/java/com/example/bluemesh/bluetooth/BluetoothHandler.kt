@@ -921,6 +921,18 @@ class BluetoothHandler(private val context: Context) {
         if (!hasPermissions()) return
         connectionTimeoutJob?.cancel()
         
+        val isClientConnected = bluetoothGatt?.device?.address == device.address
+        val isServerConnected = connectedClientDevice?.address == device.address
+        val isAlreadyConnected = (isClientConnected || isServerConnected) &&
+                (_connectionStatus.value == ConnectionStatus.CONNECTED ||
+                 _connectionStatus.value == ConnectionStatus.SYNCHRONIZING ||
+                 _connectionStatus.value == ConnectionStatus.CONNECTING)
+
+        if (isAlreadyConnected) {
+            Log.d(TAG, "Already connected/connecting to ${device.address}. Skipping reconnect.")
+            return
+        }
+
         bluetoothGatt?.let {
             try {
                 it.disconnect()

@@ -35,6 +35,5 @@ class ChatScreenViewModel(
 
     override fun onCleared() {
         super.onCleared()
-        disconnect()
     }
 }

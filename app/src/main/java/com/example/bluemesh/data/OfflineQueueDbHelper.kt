@@ -273,4 +273,78 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
             db.endTransaction()
         }
     }
+
+    fun upgradeContactIfNeeded(newUuid: String) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            // Find any contact in the database whose UUID matches newUuid (via uuidsMatch) but is not identical
+            val contactsToUpgrade = mutableListOf<String>()
+            val cursor = db.rawQuery("SELECT uuid FROM Contacts", null)
+            if (cursor.moveToFirst()) {
+                do {
+                    val existingUuid = cursor.getString(0)
+                    if (existingUuid != newUuid && com.example.bluemesh.utils.uuidsMatch(existingUuid, newUuid)) {
+                        contactsToUpgrade.add(existingUuid)
+                    }
+                } while (cursor.moveToNext())
+            }
+            cursor.close()
+
+            for (oldUuid in contactsToUpgrade) {
+                val checkCursor = db.rawQuery("SELECT session_key, name, is_official FROM Contacts WHERE uuid = ?", arrayOf(newUuid))
+                val newExists = checkCursor.count > 0
+                var oldSessionKey: String? = null
+                
+                val oldCursor = db.rawQuery("SELECT session_key, name, is_official FROM Contacts WHERE uuid = ?", arrayOf(oldUuid))
+                if (oldCursor.moveToFirst()) {
+                    oldSessionKey = oldCursor.getString(0)
+                }
+                oldCursor.close()
+
+                if (newExists) {
+                    if (checkCursor.moveToFirst()) {
+                        val newSessionKey = checkCursor.getString(0)
+                        if (newSessionKey.isNullOrEmpty() && !oldSessionKey.isNullOrEmpty()) {
+                            val values = ContentValues().apply {
+                                put("session_key", oldSessionKey)
+                            }
+                            db.update("Contacts", values, "uuid = ?", arrayOf(newUuid))
+                        }
+                    }
+                    db.delete("Contacts", "uuid = ?", arrayOf(oldUuid))
+                } else {
+                    val values = ContentValues().apply {
+                        put("uuid", newUuid)
+                    }
+                    db.update("Contacts", values, "uuid = ?", arrayOf(oldUuid))
+                }
+                checkCursor.close()
+                
+                updateMessageContactUuid(oldUuid, newUuid)
+            }
+
+            // Also update any messages in QueuedMessages that might be associated with a matching short UUID,
+            // even if the contact was not saved in the Contacts table
+            val messagesUuidsToUpgrade = mutableListOf<String>()
+            val msgCursor = db.rawQuery("SELECT DISTINCT contact_uuid FROM QueuedMessages", null)
+            if (msgCursor.moveToFirst()) {
+                do {
+                    val msgUuid = msgCursor.getString(0)
+                    if (msgUuid != newUuid && com.example.bluemesh.utils.uuidsMatch(msgUuid, newUuid)) {
+                        messagesUuidsToUpgrade.add(msgUuid)
+                    }
+                } while (msgCursor.moveToNext())
+            }
+            msgCursor.close()
+
+            for (oldUuid in messagesUuidsToUpgrade) {
+                updateMessageContactUuid(oldUuid, newUuid)
+            }
+
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
 }
