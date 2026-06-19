@@ -38,7 +38,6 @@ fun SecurityScreen(
 ) {
     val context = LocalContext.current
     val repository = remember { DefaultDataRepository.getInstance(context.applicationContext) }
-    var isPasscodeEnabled by remember { mutableStateOf(repository.isPasscodeEnabled()) }
     var isShareLocationEnabled by remember { mutableStateOf(repository.isShareLocationEnabled()) }
     var showResetDialog by remember { mutableStateOf(false) }
     var resetPasscodeVal by remember { mutableStateOf("") }
@@ -47,9 +46,7 @@ fun SecurityScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                isPasscodeEnabled = repository.isPasscodeEnabled()
-            }
+            // Passcode is required and always enabled
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
@@ -108,113 +105,56 @@ fun SecurityScreen(
                 Column(
                     modifier = Modifier.padding(16.dp)
                 ) {
-                    // Passcode Lock row
+                    // Change Passcode row
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onNavigateToLock("verify_change")
+                            }
+                            .padding(vertical = 4.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
-                            modifier = Modifier.weight(1f),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
                                 modifier = Modifier
                                     .size(40.dp)
                                     .background(
-                                        color = Color(0xFF3B82F6).copy(alpha = 0.2f),
+                                        color = Color(0xFF8B5CF6).copy(alpha = 0.2f),
                                         shape = RoundedCornerShape(8.dp)
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Lock,
-                                    contentDescription = "Passcode",
-                                    tint = Color(0xFF3B82F6)
+                                    imageVector = Icons.Default.Security,
+                                    contentDescription = "Change Passcode",
+                                    tint = Color(0xFF8B5CF6)
                                 )
                             }
                             Spacer(modifier = Modifier.width(16.dp))
                             Column {
                                 Text(
-                                    text = "Passcode Lock",
+                                    text = "Change Passcode",
                                     color = Color.White,
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = "Secure app startup and backgrounding",
+                                    text = "Update your 4-digit PIN",
                                     color = Color(0xFF94A3B8),
                                     fontSize = 12.sp
                                 )
                             }
                         }
 
-                        Text(
-                            text = "Required",
-                            color = Color(0xFF3B82F6),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = "Navigate",
+                            tint = Color(0xFF64748B)
                         )
-                    }
-
-                    if (isPasscodeEnabled) {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        HorizontalDivider(
-                            color = Color(0xFF334155)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Change Passcode row
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    onNavigateToLock("verify_change")
-                                }
-                                .padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .background(
-                                            color = Color(0xFF8B5CF6).copy(alpha = 0.2f),
-                                            shape = RoundedCornerShape(8.dp)
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Security,
-                                        contentDescription = "Change Passcode",
-                                        tint = Color(0xFF8B5CF6)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(16.dp))
-                                Column {
-                                    Text(
-                                        text = "Change Passcode",
-                                        color = Color.White,
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    Text(
-                                        text = "Update your 4-digit PIN",
-                                        color = Color(0xFF94A3B8),
-                                        fontSize = 12.sp
-                                    )
-                                }
-                            }
-
-                            Icon(
-                                imageVector = Icons.Default.ChevronRight,
-                                contentDescription = "Navigate",
-                                tint = Color(0xFF64748B)
-                            )
-                        }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
