@@ -34,19 +34,32 @@ class CryptoUtils {
             return digest.digest(sharedSecret)
         }
 
-        fun encryptDecryptXOR(data: ByteArray, aesKey: ByteArray, messageId: Int): ByteArray {
-            val digest = MessageDigest.getInstance("SHA-256")
+        fun encryptAESGCM(plaintext: ByteArray, key: ByteArray): ByteArray {
+            val iv = ByteArray(12)
+            java.security.SecureRandom().nextBytes(iv)
+            val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            val parameterSpec = javax.crypto.spec.GCMParameterSpec(128, iv)
+            val keySpec = javax.crypto.spec.SecretKeySpec(key, "AES")
+            cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, keySpec, parameterSpec)
+            val ciphertext = cipher.doFinal(plaintext)
             
-            val buffer = ByteBuffer.allocate(aesKey.size + 4)
-            buffer.put(aesKey)
-            buffer.putInt(messageId)
-            val keystream = digest.digest(buffer.array())
-            
-            val result = ByteArray(data.size)
-            for (i in data.indices) {
-                result[i] = (data[i].toInt() xor keystream[i % keystream.size].toInt()).toByte()
-            }
+            val result = ByteArray(iv.size + ciphertext.size)
+            System.arraycopy(iv, 0, result, 0, iv.size)
+            System.arraycopy(ciphertext, 0, result, iv.size, ciphertext.size)
             return result
+        }
+
+        fun decryptAESGCM(ciphertextWithIv: ByteArray, key: ByteArray): ByteArray {
+            if (ciphertextWithIv.size < 12) {
+                throw IllegalArgumentException("Ciphertext too short")
+            }
+            val iv = ciphertextWithIv.copyOfRange(0, 12)
+            val ciphertext = ciphertextWithIv.copyOfRange(12, ciphertextWithIv.size)
+            val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            val parameterSpec = javax.crypto.spec.GCMParameterSpec(128, iv)
+            val keySpec = javax.crypto.spec.SecretKeySpec(key, "AES")
+            cipher.init(javax.crypto.Cipher.DECRYPT_MODE, keySpec, parameterSpec)
+            return cipher.doFinal(ciphertext)
         }
     }
 }

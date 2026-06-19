@@ -18,12 +18,14 @@ import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class DefaultDataRepository private constructor(private val context: Context) : DataRepository {
 
@@ -41,19 +43,42 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     private val sessionKeys = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
     private var myKeyPair: java.security.KeyPair? = null
     private val lastConnectionAttempts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val contactsDbCache = java.util.concurrent.CopyOnWriteArrayList<Triple<String, String, Boolean>>()
 
-    private data class ProcessedMessageEntry(val senderUuid: String, val text: String, val timestamp: Long)
+    // Message send queue: serializes all outgoing messages to prevent GATT write collisions
+    private data class SendRequest(
+        val payload: ByteArray,
+        val activeChatUuid: String,
+        val text: String,
+        val timestamp: Long,
+        val isPending: Boolean = false,
+        val dbMessageId: Int = -1
+    )
+    private val sendQueue = Channel<SendRequest>(Channel.BUFFERED)
+
+    private data class ProcessedMessageEntry(val senderUuid: String, val timestamp: Long)
     private val processedMessagesCache = java.util.Collections.synchronizedList(mutableListOf<ProcessedMessageEntry>())
-    private val PROCESSED_CACHE_MAX_SIZE = 50
+    private val PROCESSED_CACHE_MAX_SIZE = 200
 
-    private fun isDuplicateMessageContent(senderUuid: String, text: String): Boolean {
-        val now = System.currentTimeMillis()
+    private suspend fun isDuplicateMessage(senderUuid: String, timestamp: Long): Boolean = withContext(Dispatchers.IO) {
+        if (isPasscodeEnabled()) {
+            try {
+                if (dbHelper.isDuplicateMessage(senderUuid, timestamp)) {
+                    return@withContext true
+                }
+            } catch (e: Exception) {
+                Log.e("DataRepository", "Error checking duplicate in DB", e)
+            }
+        }
         synchronized(processedMessagesCache) {
-            processedMessagesCache.removeAll { now - it.timestamp > 8000 }
-            if (processedMessagesCache.any { it.senderUuid == senderUuid && it.text == text }) return true
-            processedMessagesCache.add(ProcessedMessageEntry(senderUuid, text, now))
-            if (processedMessagesCache.size > PROCESSED_CACHE_MAX_SIZE) processedMessagesCache.removeAt(0)
-            return false
+            if (processedMessagesCache.any { it.senderUuid == senderUuid && it.timestamp == timestamp }) {
+                return@synchronized true
+            }
+            processedMessagesCache.add(ProcessedMessageEntry(senderUuid, timestamp))
+            if (processedMessagesCache.size > PROCESSED_CACHE_MAX_SIZE) {
+                processedMessagesCache.removeAt(0)
+            }
+            false
         }
     }
 
@@ -75,9 +100,105 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             prefs.edit().putString("user_uuid", UUID.randomUUID().toString()).apply()
         }
 
-        scope.launch {
+        // Collect ACKs from peer and mark messages as SENT
+        scope.launch(Dispatchers.IO) {
             try {
-                for (contact in dbHelper.getContactsList()) {
+                bluetoothHandler.acks.collect { ackTimestamp ->
+                    try {
+                        dbHelper.markMessageAsSent(ackTimestamp)
+                    } catch (e: Exception) {
+                        Log.e("DataRepository", "Error updating ACK status in DB", e)
+                    }
+
+                    _chatMessages.update { current ->
+                        current.map { msg ->
+                            if (msg.isFromMe && msg.timestamp == ackTimestamp && msg.status != "SENT") {
+                                msg.copy(status = "SENT")
+                            } else {
+                                msg
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("DataRepository", "Error in acks collector flow", e)
+            }
+        }
+
+
+        // Message send queue consumer: processes one message at a time
+        scope.launch(Dispatchers.IO) {
+            try {
+                for (request in sendQueue) {
+                    try {
+                        // Check if message is already ACKed (marked as SENT) to avoid redundant sends
+                        val isStillPending = try {
+                            val db = dbHelper.readableDatabase
+                            val cursor = db.rawQuery(
+                                "SELECT status FROM QueuedMessages WHERE timestamp = ? AND is_from_me = 1",
+                                arrayOf(request.timestamp.toString())
+                            )
+                            var status: String? = null
+                            if (cursor.moveToFirst()) {
+                                status = cursor.getString(0)
+                            }
+                            cursor.close()
+                            if (status != null) {
+                                status == "PENDING"
+                            } else {
+                                _chatMessages.value.any { it.timestamp == request.timestamp && it.status == "PENDING" }
+                            }
+                        } catch (e: Exception) {
+                            _chatMessages.value.any { it.timestamp == request.timestamp && it.status == "PENDING" }
+                        }
+
+                        if (!isStillPending) {
+                            continue
+                        }
+
+                        if (bluetoothHandler.isReady.value) {
+                            var sent = false
+                            var retryCount = 0
+                            while (!sent && retryCount < 3) {
+                                if (retryCount > 0) delay(200)
+                                sent = bluetoothHandler.sendMessageSuspend(request.payload)
+                                retryCount++
+                            }
+                            if (sent) {
+                                try {
+                                    dbHelper.markMessageAsSent(request.timestamp)
+                                } catch (e: Exception) {
+                                    Log.e("DataRepository", "Error updating status to SENT in DB", e)
+                                }
+                                _chatMessages.update { current ->
+                                    current.map { msg ->
+                                        if (msg.isFromMe && msg.timestamp == request.timestamp && msg.status != "SENT") {
+                                            msg.copy(status = "SENT")
+                                        } else {
+                                            msg
+                                        }
+                                    }
+                                }
+                            } else {
+                                sendPendingMessages(request.activeChatUuid)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("DataRepository", "Error processing sendQueue request", e)
+                    }
+                    // Small gap between messages to let BLE stack breathe
+                    delay(100)
+                }
+            } catch (e: Exception) {
+                Log.e("DataRepository", "sendQueue coroutine failed", e)
+            }
+        }
+
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                contactsDbCache.addAll(dbHelper.getContactsList())
+                for (contact in contactsDbCache) {
                     dbHelper.getSessionKey(contact.first)?.let {
                         if (it.isNotEmpty()) sessionKeys[contact.first] = it.hexToBytes()
                     }
@@ -87,113 +208,9 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             }
         }
 
-        bluetoothHandler.onPeerReadyCallback = { peerUuid ->
+        bluetoothHandler.onBluetoothStateOn = {
             scope.launch {
-                if (myKeyPair == null) myKeyPair = CryptoUtils.generateECKeyPair()
-                myKeyPair?.let {
-                    bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded)
-                }
-            }
-        }
-
-        bluetoothHandler.onKeyExchangeReceived = { senderUuid, peerPublicKeyBytes ->
-            bluetoothHandler.updatePeerUuid(senderUuid)
-            val activeNorm = activeChatUuid.replace("-", "").lowercase()
-            val senderNorm = senderUuid.replace("-", "").lowercase()
-            
-            if (isPasscodeEnabled()) {
-                val shortSenderUuid = if (senderNorm.length >= 16) senderNorm.take(16) else senderNorm
-                val contacts = dbHelper.getContactsList()
-                val storedContact = contacts.find {
-                    val storedNorm = it.first.replace("-", "").lowercase()
-                    storedNorm == shortSenderUuid || (storedNorm.length == 16 && shortSenderUuid.startsWith(storedNorm))
-                }
-                if (storedContact != null) {
-                    val storedUuid = storedContact.first
-                    val storedNorm = storedUuid.replace("-", "").lowercase()
-                    if (storedNorm.length == 16 && senderNorm.length > 16) {
-                        dbHelper.upgradeContactUuid(storedUuid, senderUuid)
-                        val existingKey = sessionKeys[storedUuid]
-                        if (existingKey != null) {
-                            sessionKeys[senderUuid] = existingKey
-                            sessionKeys.remove(storedUuid)
-                        }
-                    }
-                }
-            }
-
-            if (activeNorm.length == 16 && senderNorm.startsWith(activeNorm)) {
-                activeChatUuid = senderUuid
-                if (isPasscodeEnabled()) {
-                    _chatMessages.value = dbHelper.getMessagesForContact(senderUuid)
-                }
-            }
-            scope.launch {
-                if (myKeyPair == null) myKeyPair = CryptoUtils.generateECKeyPair()
-                myKeyPair?.let {
-                    try {
-                        val secret = CryptoUtils.generateSharedSecret(it.private, peerPublicKeyBytes)
-                        val aesKey = CryptoUtils.deriveAESKey(secret)
-                        sessionKeys[senderUuid] = aesKey
-                        if (isPasscodeEnabled()) dbHelper.saveSessionKey(senderUuid, aesKey.toHex())
-                        sendPendingMessages(senderUuid)
-                    } catch (e: Exception) {
-                        Log.e("DataRepository", "Failed shared secret computation", e)
-                    }
-                }
-            }
-        }
-
-        scope.launch {
-            bluetoothHandler.messages.collect { message ->
-                val connectedAddress = bluetoothHandler.getConnectedDeviceAddress()
-                val peer = bluetoothHandler.discoveredPeers.value.find { it.address == connectedAddress }
-                
-                val senderUuid = if (message.senderHash != null) {
-                    val myUuidHash = getUserUuid().hashCode()
-                    if (message.recipientHash != myUuidHash && message.recipientHash != 0) return@collect
-                    val resolved = if (activeChatUuid.isNotEmpty() && uuidMatchesHash(activeChatUuid, message.senderHash)) {
-                        activeChatUuid
-                    } else {
-                        getContacts().find { uuidMatchesHash(it.uuid, message.senderHash) }?.uuid
-                            ?: bluetoothHandler.discoveredPeers.value.find { uuidMatchesHash(it.uuid, message.senderHash) }?.uuid
-                    }
-                    resolved ?: "mesh_${message.senderHash}"
-                } else {
-                    peer?.uuid ?: activeChatUuid
-                }
-
-                val textBytes = message.text.toByteArray(Charsets.ISO_8859_1)
-                var msgTimestamp = message.timestamp
-                var finalMessageText = ""
-
-                if (textBytes.size >= 8) {
-                    msgTimestamp = ByteBuffer.wrap(textBytes).long
-                    finalMessageText = String(textBytes, 8, textBytes.size - 8, Charsets.UTF_8)
-                } else {
-                    finalMessageText = String(textBytes, Charsets.UTF_8)
-                }
-
-                if (senderUuid.isNotEmpty() && !message.isFromMe) {
-                    if (isDuplicateMessageContent(senderUuid, finalMessageText)) return@collect
-                }
-
-                if (isPasscodeEnabled() && senderUuid.isNotEmpty() && !message.isFromMe) {
-                    dbHelper.insertMessage(senderUuid, finalMessageText, msgTimestamp, "RECEIVED", false)
-                }
-
-                if (senderUuid == activeChatUuid && !message.isFromMe) {
-                    _chatMessages.update { current -> current + message.copy(text = finalMessageText, timestamp = msgTimestamp) }
-                }
-            }
-        }
-
-        scope.launch {
-            bluetoothHandler.connectionStatus.collect { status ->
-                if (status == ConnectionStatus.DISCONNECTED) {
-                    if (activeChatUuid.isNotEmpty() && isPasscodeEnabled()) {
-                        _chatMessages.value = dbHelper.getMessagesForContact(activeChatUuid)
-                    }
+                try {
                     startScan()
                     if (isDiscoverableEnabled()) {
                         val name = getDisplayName()
@@ -201,76 +218,293 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             startAdvertising(name)
                         }
                     }
-                } else if (status == ConnectionStatus.CONNECTED || status == ConnectionStatus.SYNCHRONIZING) {
-                    stopScan()
-                    stopAdvertising()
+                } catch (e: Exception) {
+                    Log.e("DataRepository", "Error in onBluetoothStateOn invoke", e)
                 }
             }
         }
 
-        scope.launch {
-            discoveredPeers.collect { peers ->
-                if (isPasscodeEnabled()) {
-                    for (peer in peers) {
-                        if (isContact(peer.uuid)) {
-                            val stored = getContacts().find {
-                                val s = it.uuid.replace("-", "").lowercase()
-                                val p = peer.uuid.replace("-", "").lowercase()
-                                s == p || (p.length == 16 && s.startsWith(p)) || (s.length == 16 && p.startsWith(s))
+        bluetoothHandler.onPeerReadyCallback = { peerUuid ->
+            scope.launch {
+                try {
+                    if (myKeyPair == null) myKeyPair = CryptoUtils.generateECKeyPair()
+                    myKeyPair?.let {
+                        bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded)
+                    }
+                } catch (e: Exception) {
+                    Log.e("DataRepository", "Error in PeerReadyCallback launch", e)
+                }
+            }
+        }
+
+        bluetoothHandler.onKeyExchangeReceived = { senderUuid, peerPublicKeyBytes ->
+            scope.launch(Dispatchers.IO) {
+                try {
+                    bluetoothHandler.updatePeerUuid(senderUuid)
+                    val senderNorm = com.example.bluemesh.utils.normalizeUuid(senderUuid)
+                    
+                    if (isPasscodeEnabled()) {
+                        val contacts = contactsDbCache
+                        val storedContact = contacts.find {
+                            com.example.bluemesh.utils.uuidsMatch(it.first, senderUuid)
+                        }
+                        if (storedContact != null) {
+                            val storedUuid = storedContact.first
+                            val storedNorm = com.example.bluemesh.utils.normalizeUuid(storedUuid)
+                            if (storedNorm.length == 16 && senderNorm.length > 16) {
+                                try {
+                                    dbHelper.upgradeContactUuid(storedUuid, senderUuid)
+                                    reloadContactsCache()
+                                } catch (e: Exception) {
+                                    Log.e("DataRepository", "Error upgrading contact UUID in database", e)
+                                }
+                                val existingKey = sessionKeys[storedUuid]
+                                if (existingKey != null) {
+                                    sessionKeys[senderUuid] = existingKey
+                                    sessionKeys.remove(storedUuid)
+                                }
                             }
-                            if (stored != null) {
-                                val sNorm = stored.uuid.replace("-", "").lowercase()
-                                val pNorm = peer.uuid.replace("-", "").lowercase()
-                                if (sNorm.length == 16 && pNorm.length > 16) {
-                                    dbHelper.upgradeContactUuid(stored.uuid, peer.uuid)
-                                    val existingKey = sessionKeys[stored.uuid]
-                                    if (existingKey != null) {
-                                        sessionKeys[peer.uuid] = existingKey
-                                        sessionKeys.remove(stored.uuid)
+                        }
+                    }
+
+                    if (com.example.bluemesh.utils.uuidsMatch(activeChatUuid, senderUuid)) {
+                        activeChatUuid = senderUuid
+                        if (isPasscodeEnabled()) {
+                            try {
+                                _chatMessages.value = dbHelper.getMessagesForContact(senderUuid)
+                            } catch (e: Exception) {
+                                Log.e("DataRepository", "Error fetching messages for contact on uuid upgrade", e)
+                            }
+                        }
+                    }
+                    try {
+                        if (myKeyPair == null) myKeyPair = CryptoUtils.generateECKeyPair()
+                        myKeyPair?.let {
+                            if (!bluetoothHandler.isClient()) {
+                                bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded)
+                            }
+                            try {
+                                val secret = CryptoUtils.generateSharedSecret(it.private, peerPublicKeyBytes)
+                                val aesKey = CryptoUtils.deriveAESKey(secret)
+                                sessionKeys[senderUuid] = aesKey
+                                if (isPasscodeEnabled()) {
+                                    try {
+                                        dbHelper.saveSessionKey(senderUuid, aesKey.toHex())
+                                    } catch (e: Exception) {
+                                        Log.e("DataRepository", "Error saving session key to database", e)
                                     }
-                                } else if (stored.name != peer.name || stored.isOfficial != peer.isOfficial) {
-                                    saveContact(stored.uuid, peer.name)
+                                }
+                                sendPendingMessages(senderUuid)
+                            } catch (e: Exception) {
+                                Log.e("DataRepository", "Failed shared secret computation", e)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("DataRepository", "Error in KeyExchangeReceived coroutine", e)
+                    }
+                } catch (e: Exception) {
+                    Log.e("DataRepository", "Error in onKeyExchangeReceived callback", e)
+                }
+            }
+        }
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                bluetoothHandler.messages.collect { message ->
+                    try {
+                        val connectedAddress = bluetoothHandler.getConnectedDeviceAddress()
+                        val peer = bluetoothHandler.discoveredPeers.value.find { it.address == connectedAddress }
+                        
+                        val senderUuid = if (message.senderHash != null) {
+                            val myUuidHash = getUserUuid().hashCode()
+                            if (message.recipientHash != myUuidHash && message.recipientHash != 0) return@collect
+                            val resolved = if (activeChatUuid.isNotEmpty() && uuidMatchesHash(activeChatUuid, message.senderHash)) {
+                                activeChatUuid
+                            } else {
+                                getContacts().find { uuidMatchesHash(it.uuid, message.senderHash) }?.uuid
+                                    ?: bluetoothHandler.discoveredPeers.value.find { uuidMatchesHash(it.uuid, message.senderHash) }?.uuid
+                            }
+                            resolved ?: "mesh_${message.senderHash}"
+                        } else {
+                            peer?.uuid ?: activeChatUuid
+                        }
+
+                        val textBytes = message.text.toByteArray(Charsets.ISO_8859_1)
+                        var msgTimestamp = message.timestamp
+                        var finalMessageText = ""
+                        if (textBytes.size >= 6 && textBytes[0] == 1.toByte() && textBytes[1] == 2.toByte()) {
+                            // Encrypted payload
+                            val ciphertext = textBytes.copyOfRange(6, textBytes.size)
+                            val key = getSessionKeyForUuid(senderUuid)
+                            if (key != null) {
+                                try {
+                                    val decrypted = CryptoUtils.decryptAESGCM(ciphertext, key)
+                                    if (decrypted.size >= 8) {
+                                        msgTimestamp = ByteBuffer.wrap(decrypted).long
+                                        finalMessageText = String(decrypted, 8, decrypted.size - 8, Charsets.UTF_8)
+                                    } else {
+                                        finalMessageText = String(decrypted, Charsets.UTF_8)
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("DataRepository", "Decryption failed for message from $senderUuid", e)
+                                    finalMessageText = "[Decryption Failed]"
+                                }
+                            } else {
+                                Log.w("DataRepository", "Missing session key for encrypted message from $senderUuid")
+                                finalMessageText = "[Encrypted Message]"
+                            }
+                        } else {
+                            // Plaintext
+                            if (textBytes.size >= 8) {
+                                msgTimestamp = ByteBuffer.wrap(textBytes).long
+                                finalMessageText = String(textBytes, 8, textBytes.size - 8, Charsets.UTF_8)
+                            } else {
+                                finalMessageText = String(textBytes, Charsets.UTF_8)
+                            }
+                        }
+
+                        if (!message.isFromMe && senderUuid.isNotEmpty()) {
+                            if (isDuplicateMessage(senderUuid, msgTimestamp)) {
+                                scope.launch {
+                                    bluetoothHandler.sendAck(msgTimestamp)
+                                }
+                                return@collect
+                            }
+                            scope.launch {
+                                bluetoothHandler.sendAck(msgTimestamp)
+                            }
+                        }
+
+                        if (isPasscodeEnabled() && senderUuid.isNotEmpty() && !message.isFromMe) {
+                            try {
+                                dbHelper.insertMessage(senderUuid, finalMessageText, msgTimestamp, "RECEIVED", false)
+                            } catch (e: Exception) {
+                                Log.e("DataRepository", "Error inserting received message to database", e)
+                            }
+                        }
+
+                        if (senderUuid == activeChatUuid && !message.isFromMe) {
+                            _chatMessages.update { current -> current + message.copy(text = finalMessageText, timestamp = msgTimestamp) }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("DataRepository", "Error handling incoming message collect", e)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("DataRepository", "Error in messages collector flow", e)
+            }
+        }
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                bluetoothHandler.connectionStatus.collect { status ->
+                    try {
+                        if (status == ConnectionStatus.DISCONNECTED) {
+                            if (activeChatUuid.isNotEmpty() && isPasscodeEnabled()) {
+                                try {
+                                    _chatMessages.value = dbHelper.getMessagesForContact(activeChatUuid)
+                                } catch (e: Exception) {
+                                    Log.e("DataRepository", "Error loading messages on disconnect", e)
+                                }
+                            }
+                            startScan()
+                            if (isDiscoverableEnabled()) {
+                                val name = getDisplayName()
+                                if (name.isNotEmpty()) {
+                                    startAdvertising(name)
+                                }
+                            }
+                        } else if (status == ConnectionStatus.CONNECTING || status == ConnectionStatus.CONNECTED || status == ConnectionStatus.SYNCHRONIZING) {
+                            stopScan()
+                            stopAdvertising()
+                        }
+                    } catch (e: Exception) {
+                        Log.e("DataRepository", "Error processing connection status change", e)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("DataRepository", "Error in connectionStatus flow", e)
+            }
+        }
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                discoveredPeers.collect { peers ->
+                    try {
+                        if (isPasscodeEnabled()) {
+                            for (peer in peers) {
+                                if (isContact(peer.uuid)) {
+                                    val stored = getContacts().find {
+                                        com.example.bluemesh.utils.uuidsMatch(it.uuid, peer.uuid)
+                                    }
+                                    if (stored != null) {
+                                        val sNorm = com.example.bluemesh.utils.normalizeUuid(stored.uuid)
+                                        val pNorm = com.example.bluemesh.utils.normalizeUuid(peer.uuid)
+                                        if (sNorm.length == 16 && pNorm.length > 16) {
+                                            try {
+                                                dbHelper.upgradeContactUuid(stored.uuid, peer.uuid)
+                                                reloadContactsCache()
+                                            } catch (e: Exception) {
+                                                Log.e("DataRepository", "Error upgrading contact UUID in database", e)
+                                            }
+                                            val existingKey = sessionKeys[stored.uuid]
+                                            if (existingKey != null) {
+                                                sessionKeys[peer.uuid] = existingKey
+                                                sessionKeys.remove(stored.uuid)
+                                            }
+                                        } else if (stored.name != peer.name || stored.isOfficial != peer.isOfficial) {
+                                            saveContact(stored.uuid, peer.name)
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-                }
 
-                if (connectionStatus.value == ConnectionStatus.DISCONNECTED) {
-                    var attemptedConnection = false
-                    // 1. High priority: reconnect to active chat uuid if discovered
-                    if (activeChatUuid.isNotEmpty()) {
-                        val activePeer = peers.find { peer ->
-                            val s = activeChatUuid.replace("-", "").lowercase()
-                            val p = peer.uuid.replace("-", "").lowercase()
-                            s == p || (p.length == 16 && s.startsWith(p)) || (s.length == 16 && p.startsWith(s))
-                        }
-                        if (activePeer != null) {
-                            val lastAttempt = lastConnectionAttempts[activePeer.uuid] ?: 0L
-                            if (System.currentTimeMillis() - lastAttempt > 5000) {
-                                lastConnectionAttempts[activePeer.uuid] = System.currentTimeMillis()
-                                Log.d("DataRepository", "Auto-reconnecting to active chat peer: ${activePeer.uuid}")
-                                connectToPeerByUuid(activePeer.uuid)
-                                attemptedConnection = true
+                        if (connectionStatus.value == ConnectionStatus.DISCONNECTED) {
+                            var attemptedConnection = false
+                            // 1. High priority: reconnect to active chat uuid if discovered
+                            if (activeChatUuid.isNotEmpty()) {
+                                val activePeer = peers.find { peer ->
+                                    com.example.bluemesh.utils.uuidsMatch(activeChatUuid, peer.uuid)
+                                }
+                                if (activePeer != null) {
+                                    val lastAttempt = lastConnectionAttempts[activePeer.uuid] ?: 0L
+                                    if (System.currentTimeMillis() - lastAttempt > 5000) {
+                                        lastConnectionAttempts[activePeer.uuid] = System.currentTimeMillis()
+                                        Log.d("DataRepository", "Auto-reconnecting to active chat peer: ${activePeer.uuid}")
+                                        connectToPeerByUuid(activePeer.uuid)
+                                        attemptedConnection = true
+                                    }
+                                }
                             }
-                        }
-                    }
 
-                    // 2. Reconnect to contacts with pending messages (if passcode enabled)
-                    if (!attemptedConnection && isPasscodeEnabled()) {
-                        for (peer in peers) {
-                            if (isContact(peer.uuid) && dbHelper.getPendingMessages(peer.uuid).isNotEmpty()) {
-                                val lastAttempt = lastConnectionAttempts[peer.uuid] ?: 0L
-                                if (System.currentTimeMillis() - lastAttempt > 5000) {
-                                    lastConnectionAttempts[peer.uuid] = System.currentTimeMillis()
-                                    Log.d("DataRepository", "Auto-reconnecting to contact with pending messages: ${peer.uuid}")
-                                    connectToPeerByUuid(peer.uuid)
-                                    break
+                            // 2. Reconnect to contacts with pending messages (if passcode enabled)
+                            if (!attemptedConnection && isPasscodeEnabled()) {
+                                for (peer in peers) {
+                                    val hasPending = try {
+                                        dbHelper.getPendingMessages(peer.uuid).isNotEmpty()
+                                    } catch (e: Exception) {
+                                        Log.e("DataRepository", "Error reading pending messages", e)
+                                        false
+                                    }
+                                    if (isContact(peer.uuid) && hasPending) {
+                                        val lastAttempt = lastConnectionAttempts[peer.uuid] ?: 0L
+                                        if (System.currentTimeMillis() - lastAttempt > 5000) {
+                                            lastConnectionAttempts[peer.uuid] = System.currentTimeMillis()
+                                            Log.d("DataRepository", "Auto-reconnecting to contact with pending messages: ${peer.uuid}")
+                                            connectToPeerByUuid(peer.uuid)
+                                            break
+                                        }
+                                    }
                                 }
                             }
                         }
+                    } catch (e: Exception) {
+                        Log.e("DataRepository", "Error processing discoveredPeers updates", e)
                     }
                 }
+            } catch (e: Exception) {
+                Log.e("DataRepository", "Error in discoveredPeers flow", e)
             }
         }
     }
@@ -285,26 +519,59 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     override fun sendMessage(text: String): Boolean {
         if (activeChatUuid.isEmpty()) return false
         val timestamp = System.currentTimeMillis()
-        val peer = bluetoothHandler.discoveredPeers.value.find { it.uuid == activeChatUuid }
         val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
-        var sent = false
 
-        bluetoothHandler.advertiseMeshMessage(messageId, getUserUuid(), activeChatUuid, text)
-        if (peer != null && bluetoothHandler.isReady.value) {
-            sent = bluetoothHandler.sendMessage(BluetoothHandler.encodePayload(timestamp, text))
+        if (!bluetoothHandler.isReady.value) {
+            bluetoothHandler.advertiseMeshMessage(messageId, getUserUuid(), activeChatUuid, text)
         }
 
-        if (isPasscodeEnabled()) {
-            dbHelper.insertMessage(activeChatUuid, text, timestamp, if (sent) "SENT" else "PENDING", true)
-            if (!sent) {
-                scope.launch {
-                    sendPendingMessages(activeChatUuid)
-                }
+        // Optimistically add to chat UI as PENDING, will be updated to SENT by queue consumer
+        scope.launch(Dispatchers.IO) {
+            try {
+                dbHelper.insertMessage(activeChatUuid, text, timestamp, "PENDING", true)
+            } catch (e: Exception) {
+                Log.e("DataRepository", "Error inserting offline message", e)
             }
         }
-        _chatMessages.update { current -> current + ChatMessage(text, true, timestamp, if (sent) "SENT" else "PENDING") }
+        _chatMessages.update { current -> current + ChatMessage(text, true, timestamp, "PENDING") }
+
+        val sessionKey = getSessionKeyForUuid(activeChatUuid)
+        val payload = if (sessionKey != null) {
+            val rawPayload = BluetoothHandler.encodePayload(timestamp, text)
+            val ciphertext = CryptoUtils.encryptAESGCM(rawPayload, sessionKey)
+            
+            ByteArray(ciphertext.size + 6).apply {
+                this[0] = 1
+                this[1] = 2 // flags = 2
+                val encryptedMessageId = messageId or java.lang.Integer.MIN_VALUE
+                val idBytes = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.BIG_ENDIAN).putInt(encryptedMessageId).array()
+                System.arraycopy(idBytes, 0, this, 2, 4)
+                System.arraycopy(ciphertext, 0, this, 6, ciphertext.size)
+            }
+        } else {
+            BluetoothHandler.encodePayload(timestamp, text)
+        }
+
+        // Enqueue for serialized sending
+        scope.launch(Dispatchers.IO) {
+            try {
+                sendQueue.send(SendRequest(
+                    payload = payload,
+                    activeChatUuid = activeChatUuid,
+                    text = text,
+                    timestamp = timestamp
+                ))
+            } catch (e: Exception) {
+                Log.e("DataRepository", "Error sending message to queue channel", e)
+            }
+        }
         return true
     }
+
+    override fun clearDiscoveredPeers() {
+        bluetoothHandler.clearDiscoveredPeers()
+    }
+
 
     override fun getDisplayName(): String = prefs.getString("display_name", "") ?: ""
 
@@ -319,20 +586,23 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     override fun clearChatHistory() {
         _chatMessages.value = emptyList()
         if (activeChatUuid.isNotEmpty()) {
-            dbHelper.writableDatabase.delete("QueuedMessages", "contact_uuid = ?", arrayOf(activeChatUuid))
+            scope.launch(Dispatchers.IO) {
+                try {
+                    dbHelper.writableDatabase.delete("QueuedMessages", "contact_uuid = ?", arrayOf(activeChatUuid))
+                } catch (e: Exception) {
+                    Log.e("DataRepository", "Error clearing chat history", e)
+                }
+            }
         }
     }
 
     override fun getUserUuid(): String = prefs.getString("user_uuid", "") ?: ""
 
     override fun getContacts(): List<BluetoothPeer> {
-        val list = if (isPasscodeEnabled()) dbHelper.getContactsList() else emptyList()
         val currentDiscovered = bluetoothHandler.discoveredPeers.value
-        return list.map { (uuid, name, isOfficialDb) ->
+        return contactsDbCache.map { (uuid, name, isOfficialDb) ->
             val discoveredPeer = currentDiscovered.find {
-                val s = uuid.replace("-", "").lowercase()
-                val p = it.uuid.replace("-", "").lowercase()
-                s == p || (p.length == 16 && s.startsWith(p)) || (s.length == 16 && p.startsWith(s))
+                com.example.bluemesh.utils.uuidsMatch(uuid, it.uuid)
             }
             BluetoothPeer(
                 address = discoveredPeer?.address ?: "", name = name, device = discoveredPeer?.device,
@@ -345,21 +615,35 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
     override fun saveContact(uuid: String, name: String) {
         val isOfficial = bluetoothHandler.discoveredPeers.value.find {
-            val s = uuid.replace("-", "").lowercase()
-            val p = it.uuid.replace("-", "").lowercase()
-            s == p || (p.length == 16 && s.startsWith(p)) || (s.length == 16 && p.startsWith(s))
+            com.example.bluemesh.utils.uuidsMatch(uuid, it.uuid)
         }?.isOfficial ?: false
-        dbHelper.saveContact(uuid, name, isOfficial)
+        val normalized = com.example.bluemesh.utils.normalizeUuid(uuid)
+        contactsDbCache.removeAll { com.example.bluemesh.utils.normalizeUuid(it.first) == normalized }
+        contactsDbCache.add(Triple(uuid, name, isOfficial))
+        scope.launch(Dispatchers.IO) {
+            try {
+                dbHelper.saveContact(uuid, name, isOfficial)
+            } catch (e: Exception) {
+                Log.e("DataRepository", "Error saving contact", e)
+            }
+        }
     }
 
-    override fun deleteContact(uuid: String) = dbHelper.deleteContact(uuid)
+    override fun deleteContact(uuid: String) {
+        val normalized = com.example.bluemesh.utils.normalizeUuid(uuid)
+        contactsDbCache.removeAll { com.example.bluemesh.utils.normalizeUuid(it.first) == normalized }
+        scope.launch(Dispatchers.IO) {
+            try {
+                dbHelper.deleteContact(uuid)
+            } catch (e: Exception) {
+                Log.e("DataRepository", "Error deleting contact", e)
+            }
+        }
+    }
 
     override fun isContact(uuid: String): Boolean {
-        if (dbHelper.isContact(uuid)) return true
-        val normalized = uuid.replace("-", "").lowercase()
-        return dbHelper.getContactsList().any {
-            val dbNorm = it.first.replace("-", "").lowercase()
-            dbNorm == normalized || (normalized.length == 16 && dbNorm.startsWith(normalized)) || (dbNorm.length == 16 && normalized.startsWith(dbNorm))
+        return contactsDbCache.any {
+            com.example.bluemesh.utils.uuidsMatch(it.first, uuid)
         }
     }
 
@@ -374,46 +658,83 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         }
     }
 
-    private suspend fun sendPendingMessages(peerUuid: String) {
+    private suspend fun sendPendingMessages(peerUuid: String) = withContext(Dispatchers.IO) {
         delay(500)
         val canonicalUuid = dbHelper.getContactsList().find {
-            val s = it.first.replace("-", "").lowercase()
-            val p = peerUuid.replace("-", "").lowercase()
-            s == p || (p.length == 16 && s.startsWith(p)) || (s.length == 16 && p.startsWith(s))
+            com.example.bluemesh.utils.uuidsMatch(it.first, peerUuid)
         }?.first ?: peerUuid
 
         val pending = dbHelper.getPendingMessages(canonicalUuid)
-        if (pending.isEmpty()) return
+        if (pending.isEmpty()) return@withContext
 
         for (msg in pending) {
-            var success = false
-            var retryCount = 0
-            while (!success && retryCount < 3) {
-                if (retryCount > 0) delay(300)
-                success = bluetoothHandler.sendMessage(BluetoothHandler.encodePayload(msg.third, msg.second))
-                retryCount++
-            }
-            if (success) {
-                dbHelper.markMessageAsSent(msg.first)
-                val activeNorm = activeChatUuid.replace("-", "").lowercase()
-                val targetNorm = canonicalUuid.replace("-", "").lowercase()
-                if (activeNorm == targetNorm || (targetNorm.length == 16 && activeNorm.startsWith(targetNorm)) || (activeNorm.length == 16 && targetNorm.startsWith(activeNorm))) {
-                    _chatMessages.update { current ->
-                        current.map { if (it.text == msg.second && it.status == "PENDING") it.copy(status = "SENT") else it }
-                    }
+            val sessionKey = getSessionKeyForUuid(canonicalUuid)
+            val msgId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
+            val payload = if (sessionKey != null) {
+                val rawPayload = BluetoothHandler.encodePayload(msg.third, msg.second)
+                val ciphertext = CryptoUtils.encryptAESGCM(rawPayload, sessionKey)
+                
+                ByteArray(ciphertext.size + 6).apply {
+                    this[0] = 1
+                    this[1] = 2 // flags = 2
+                    val encryptedMessageId = msgId or java.lang.Integer.MIN_VALUE
+                    val idBytes = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.BIG_ENDIAN).putInt(encryptedMessageId).array()
+                    System.arraycopy(idBytes, 0, this, 2, 4)
+                    System.arraycopy(ciphertext, 0, this, 6, ciphertext.size)
                 }
-                delay(100)
             } else {
-                break
+                BluetoothHandler.encodePayload(msg.third, msg.second)
             }
+            // Enqueue through the serialized send queue
+            sendQueue.send(SendRequest(
+                payload = payload,
+                activeChatUuid = canonicalUuid,
+                text = msg.second,
+                timestamp = msg.third,
+                isPending = true,
+                dbMessageId = msg.first
+            ))
         }
+    }
+
+    private fun getOrGenerateSalt(): String {
+        var salt = prefs.getString("passcode_salt", "") ?: ""
+        if (salt.isEmpty()) {
+            val random = java.security.SecureRandom()
+            val saltBytes = ByteArray(16)
+            random.nextBytes(saltBytes)
+            salt = saltBytes.joinToString("") { "%02x".format(it) }
+            prefs.edit().putString("passcode_salt", salt).apply()
+        }
+        return salt
+    }
+
+    private fun hashPin(pin: String): String = try {
+        val salt = getOrGenerateSalt()
+        val digest = MessageDigest.getInstance("SHA-256")
+        val input = salt + pin
+        digest.digest(input.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    } catch (e: Exception) { "" }
+
+    override fun getLockoutTimeRemaining(): Long {
+        val lockoutUntil = prefs.getLong("lockout_until", 0L)
+        val now = System.currentTimeMillis()
+        return if (lockoutUntil > now) lockoutUntil - now else 0L
     }
 
     override fun isPasscodeEnabled(): Boolean = prefs.getBoolean("is_passcode_enabled", false)
 
     override fun savePasscode(pin: String) {
-        prefs.edit().putString("passcode_hash", hashPin(pin)).putBoolean("is_passcode_enabled", true)
-            .putString("user_uuid", UUID.randomUUID().toString()).apply()
+        prefs.edit()
+            .putInt("failed_attempts", 0)
+            .putLong("lockout_until", 0L)
+            .remove("passcode_salt")
+            .apply()
+        prefs.edit()
+            .putString("passcode_hash", hashPin(pin))
+            .putBoolean("is_passcode_enabled", true)
+            .putString("user_uuid", UUID.randomUUID().toString())
+            .apply()
         getDisplayName().let {
             if (it.isNotEmpty()) {
                 bluetoothHandler.stopAdvertising()
@@ -423,13 +744,42 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     }
 
     override fun verifyPasscode(pin: String): Boolean {
+        val lockoutUntil = prefs.getLong("lockout_until", 0L)
+        val now = System.currentTimeMillis()
+        if (now < lockoutUntil) {
+            return false
+        }
         val savedHash = prefs.getString("passcode_hash", "") ?: ""
-        return savedHash.isNotEmpty() && hashPin(pin) == savedHash
+        val correct = savedHash.isNotEmpty() && hashPin(pin) == savedHash
+        if (correct) {
+            prefs.edit().putInt("failed_attempts", 0).putLong("lockout_until", 0L).apply()
+            return true
+        } else {
+            val attempts = prefs.getInt("failed_attempts", 0) + 1
+            prefs.edit().putInt("failed_attempts", attempts).apply()
+            val delayMs = when {
+                attempts >= 7 -> 15 * 60 * 1000L
+                attempts == 6 -> 5 * 60 * 1000L
+                attempts == 5 -> 30 * 1000L
+                attempts == 4 -> 5 * 1000L
+                else -> 0L
+            }
+            if (delayMs > 0) {
+                prefs.edit().putLong("lockout_until", System.currentTimeMillis() + delayMs).apply()
+            }
+            return false
+        }
     }
 
     override fun disablePasscode() {
-        prefs.edit().remove("passcode_hash").putBoolean("is_passcode_enabled", false)
-            .putString("user_uuid", UUID.randomUUID().toString()).apply()
+        prefs.edit()
+            .remove("passcode_hash")
+            .remove("passcode_salt")
+            .remove("failed_attempts")
+            .remove("lockout_until")
+            .putBoolean("is_passcode_enabled", false)
+            .putString("user_uuid", UUID.randomUUID().toString())
+            .apply()
         getDisplayName().let {
             if (it.isNotEmpty()) {
                 bluetoothHandler.stopAdvertising()
@@ -462,10 +812,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         }
     }
 
-    private fun hashPin(pin: String): String = try {
-        val digest = MessageDigest.getInstance("SHA-256")
-        digest.digest(pin.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
-    } catch (e: Exception) { "" }
+
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
     private fun String.hexToBytes(): ByteArray {
@@ -476,20 +823,28 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         return result
     }
 
+    private suspend fun reloadContactsCache() = withContext(Dispatchers.IO) {
+        try {
+            val list = dbHelper.getContactsList()
+            contactsDbCache.clear()
+            contactsDbCache.addAll(list)
+        } catch (e: Exception) {
+            Log.e("DataRepository", "Error reloading contacts cache", e)
+        }
+    }
+
     private fun getSessionKeyForUuid(uuid: String): ByteArray? {
         val direct = sessionKeys[uuid]
         if (direct != null) return direct
-        val normalized = uuid.replace("-", "").lowercase()
         val matchKey = sessionKeys.keys.find {
-            val kNorm = it.replace("-", "").lowercase()
-            kNorm == normalized || (normalized.length == 16 && kNorm.startsWith(normalized)) || (kNorm.length == 16 && normalized.startsWith(kNorm))
+            com.example.bluemesh.utils.uuidsMatch(it, uuid)
         }
         return if (matchKey != null) sessionKeys[matchKey] else null
     }
 
     private fun uuidMatchesHash(uuid: String, hash: Int): Boolean {
         if (uuid.hashCode() == hash) return true
-        val normalized = uuid.replace("-", "").lowercase()
+        val normalized = com.example.bluemesh.utils.normalizeUuid(uuid)
         if (normalized.hashCode() == hash) return true
         val shortUuid = if (normalized.length >= 16) normalized.take(16) else normalized
         if (shortUuid.hashCode() == hash) return true
