@@ -22,7 +22,6 @@ import androidx.core.internal.view.SupportMenu
 import com.example.bluemesh.data.models.BluetoothPeer
 import com.example.bluemesh.data.models.ChatMessage
 import com.example.bluemesh.data.models.ConnectionStatus
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -120,8 +119,6 @@ class BluetoothHandler(private val context: Context) {
                         _isReady.value = false
                         connectedClientDevice = null
                         connectedServerDevice = null
-                        writeCompletionDeferred?.complete(false)
-                        writeCompletionDeferred = null
                     } catch (e: Exception) {
                         Log.e(TAG, "Error cleaning up on Bluetooth state off", e)
                     }
@@ -139,9 +136,7 @@ class BluetoothHandler(private val context: Context) {
         }
     }
 
-    // GATT write serialization: ensures only one message writes at a time
     private val gattWriteMutex = Mutex()
-    @Volatile private var writeCompletionDeferred: CompletableDeferred<Boolean>? = null
 
     // Cache to assemble incoming chunked BLE packets
     private val incomingChunks = java.util.Collections.synchronizedMap(
@@ -344,10 +339,7 @@ class BluetoothHandler(private val context: Context) {
             if (connectedServerDevice == null && connectedClientDevice == null) {
                 _connectionStatus.value = ConnectionStatus.DISCONNECTED
             }
-            
             // Cancel any pending writes immediately
-            writeCompletionDeferred?.complete(false)
-            writeCompletionDeferred = null
         } catch (e: Exception) {
             Log.e(TAG, "Error in handleServerDisconnect", e)
         }
@@ -446,10 +438,6 @@ class BluetoothHandler(private val context: Context) {
                     _isReady.value = false
                     negotiatedMtu = 23
                     _connectionStatus.value = ConnectionStatus.DISCONNECTED
-                    
-                    // Cancel any pending writes immediately
-                    writeCompletionDeferred?.complete(false)
-                    writeCompletionDeferred = null
                     return
                 }
 
@@ -549,8 +537,6 @@ class BluetoothHandler(private val context: Context) {
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             try {
-                // Signal the waiting sendMessage coroutine that the write completed
-                writeCompletionDeferred?.complete(status == BluetoothGatt.GATT_SUCCESS)
                 writeAck.trySend(status == BluetoothGatt.GATT_SUCCESS)
             } catch (e: Exception) {
                 Log.e(TAG, "Error in onCharacteristicWrite", e)
@@ -1059,6 +1045,65 @@ class BluetoothHandler(private val context: Context) {
         }
     }
 
+    private suspend fun sendChunksInternal(chunks: List<ByteArray>): Boolean {
+        val charClient = messageCharacteristic
+        val gattClient = bluetoothGatt
+        if (gattClient != null && charClient != null) {
+            var success = true
+            while (writeAck.tryReceive().isSuccess) {}
+            for (chunk in chunks) {
+                val writeSuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gattClient.writeCharacteristic(charClient, chunk, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    charClient.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    @Suppress("DEPRECATION")
+                    charClient.value = chunk
+                    @Suppress("DEPRECATION")
+                    gattClient.writeCharacteristic(charClient)
+                }
+                if (!writeSuccess) {
+                    success = false
+                    break
+                }
+                val callbackResult = withTimeoutOrNull<Boolean>(2000) { writeAck.receive() }
+                if (callbackResult != true) {
+                    success = false
+                    break
+                }
+            }
+            if (success) return true
+        }
+
+        val server = bluetoothGattServer
+        val activeClient = connectedClientDevice
+        if (server != null && activeClient != null) {
+            val characteristic = server.getService(SERVICE_UUID)?.getCharacteristic(MESSAGE_CHARACTERISTIC_UUID)
+            if (characteristic != null) {
+                var success = true
+                for (chunk in chunks) {
+                    val notifySuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        server.notifyCharacteristicChanged(activeClient, characteristic, false, chunk) == BluetoothStatusCodes.SUCCESS
+                    } else {
+                        @Suppress("DEPRECATION")
+                        characteristic.value = chunk
+                        @Suppress("DEPRECATION")
+                        server.notifyCharacteristicChanged(activeClient, characteristic, false)
+                    }
+                    if (!notifySuccess) {
+                        success = false
+                        break
+                    }
+                    if (chunks.size > 1) {
+                        delay(80)
+                    }
+                }
+                if (success) return true
+            }
+        }
+        return false
+    }
+
     suspend fun sendMessage(text: String): Boolean {
         val bytes = encodePayload(System.currentTimeMillis(), text)
         return sendMessageSuspend(bytes)
@@ -1106,74 +1151,12 @@ class BluetoothHandler(private val context: Context) {
                 }
             }
 
-            // Client send
-            val charClient = messageCharacteristic
-            val gattClient = bluetoothGatt
-            if (gattClient != null && charClient != null) {
-                var success = true
-                // Drain any stale ACKs
-                while (writeAck.tryReceive().isSuccess) {}
-                for (chunk in chunks) {
-                    val writeSuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        gattClient.writeCharacteristic(charClient, chunk, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
-                    } else {
-                        @Suppress("DEPRECATION")
-                        charClient.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                        @Suppress("DEPRECATION")
-                        charClient.value = chunk
-                        @Suppress("DEPRECATION")
-                        gattClient.writeCharacteristic(charClient)
-                    }
-                    if (!writeSuccess) {
-                        success = false
-                        break
-                    }
-                    // Wait for onCharacteristicWrite callback via channel (up to 2s timeout)
-                    val callbackResult = withTimeoutOrNull<Boolean>(2000) { writeAck.receive() }
-                    if (callbackResult != true) {
-                        success = false
-                        break
-                    }
-                }
-                if (success) {
-                    val text = decodePayload(bytes)?.second ?: String(bytes, Charsets.UTF_8)
-                    _messages.tryEmit(ChatMessage(text, isFromMe = true, timestamp = System.currentTimeMillis()))
-                    return@withLock true
-                }
+            val success = sendChunksInternal(chunks)
+            if (success) {
+                val text = decodePayload(bytes)?.second ?: String(bytes, Charsets.UTF_8)
+                _messages.tryEmit(ChatMessage(text, isFromMe = true, timestamp = System.currentTimeMillis()))
             }
-
-            // Server notify (no onCharacteristicWrite callback for server, use delay)
-            val server = bluetoothGattServer
-            val activeClient = connectedClientDevice
-            if (server != null && activeClient != null) {
-                val characteristic = server.getService(SERVICE_UUID)?.getCharacteristic(MESSAGE_CHARACTERISTIC_UUID)
-                if (characteristic != null) {
-                    var success = true
-                    for (chunk in chunks) {
-                        val notifySuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            server.notifyCharacteristicChanged(activeClient, characteristic, false, chunk) == BluetoothStatusCodes.SUCCESS
-                        } else {
-                            @Suppress("DEPRECATION")
-                            characteristic.value = chunk
-                            @Suppress("DEPRECATION")
-                            server.notifyCharacteristicChanged(activeClient, characteristic, false)
-                        }
-                        if (!notifySuccess) {
-                            success = false
-                            break
-                        }
-                        if (chunks.size > 1) {
-                            delay(80)
-                        }
-                    }
-                    if (success) {
-                        val text = decodePayload(bytes)?.second ?: String(bytes, Charsets.UTF_8)
-                        _messages.tryEmit(ChatMessage(text, isFromMe = true, timestamp = System.currentTimeMillis()))
-                        return@withLock true
-                    }
-                }
-            }
-            false
+            return@withLock success
         } catch (e: Exception) {
             Log.e(TAG, "Exception in sendMessageSuspend", e)
             false
@@ -1194,48 +1177,7 @@ class BluetoothHandler(private val context: Context) {
                 System.arraycopy(payload, 0, this, 3, payload.size)
             }
 
-            val charClient = messageCharacteristic
-            val gattClient = bluetoothGatt
-            if (gattClient != null && charClient != null) {
-                val deferred = CompletableDeferred<Boolean>()
-                writeCompletionDeferred = deferred
-
-                val writeSuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    gattClient.writeCharacteristic(charClient, chunk, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
-                } else {
-                    @Suppress("DEPRECATION")
-                    charClient.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                    @Suppress("DEPRECATION")
-                    charClient.value = chunk
-                    @Suppress("DEPRECATION")
-                    gattClient.writeCharacteristic(charClient)
-                }
-                if (!writeSuccess) {
-                    writeCompletionDeferred = null
-                    return@withLock false
-                }
-                val callbackResult = withTimeoutOrNull(2000) { deferred.await() }
-                writeCompletionDeferred = null
-                return@withLock (callbackResult == true)
-            }
-
-            val server = bluetoothGattServer
-            val activeClient = connectedClientDevice
-            if (server != null && activeClient != null) {
-                val characteristic = server.getService(SERVICE_UUID)?.getCharacteristic(MESSAGE_CHARACTERISTIC_UUID)
-                if (characteristic != null) {
-                    val notifySuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        server.notifyCharacteristicChanged(activeClient, characteristic, false, chunk) == BluetoothStatusCodes.SUCCESS
-                    } else {
-                        @Suppress("DEPRECATION")
-                        characteristic.value = chunk
-                        @Suppress("DEPRECATION")
-                        server.notifyCharacteristicChanged(activeClient, characteristic, false)
-                    }
-                    return@withLock notifySuccess
-                }
-            }
-            false
+            return@withLock sendChunksInternal(listOf(chunk))
         } catch (e: Exception) {
             Log.e(TAG, "Exception in sendAck", e)
             false
@@ -1264,63 +1206,7 @@ class BluetoothHandler(private val context: Context) {
                 }
             }
 
-            val charClient = messageCharacteristic
-            val gattClient = bluetoothGatt
-            if (gattClient != null && charClient != null) {
-                var success = true
-                // Drain any stale ACKs
-                while (writeAck.tryReceive().isSuccess) {}
-                for (chunk in chunks) {
-                    val writeSuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        gattClient.writeCharacteristic(charClient, chunk, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
-                    } else {
-                        @Suppress("DEPRECATION")
-                        charClient.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                        @Suppress("DEPRECATION")
-                        charClient.value = chunk
-                        @Suppress("DEPRECATION")
-                        gattClient.writeCharacteristic(charClient)
-                    }
-                    if (!writeSuccess) {
-                        success = false
-                        break
-                    }
-                    val callbackResult = withTimeoutOrNull<Boolean>(2000) { writeAck.receive() }
-                    if (callbackResult != true) {
-                        success = false
-                        break
-                    }
-                }
-                if (success) return@withLock true
-            }
-
-            val server = bluetoothGattServer
-            val activeClient = connectedClientDevice
-            if (server != null && activeClient != null) {
-                val characteristic = server.getService(SERVICE_UUID)?.getCharacteristic(MESSAGE_CHARACTERISTIC_UUID)
-                if (characteristic != null) {
-                    var success = true
-                    for (chunk in chunks) {
-                        val notifySuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            server.notifyCharacteristicChanged(activeClient, characteristic, false, chunk) == BluetoothStatusCodes.SUCCESS
-                        } else {
-                            @Suppress("DEPRECATION")
-                            characteristic.value = chunk
-                            @Suppress("DEPRECATION")
-                            server.notifyCharacteristicChanged(activeClient, characteristic, false)
-                        }
-                        if (!notifySuccess) {
-                            success = false
-                            break
-                        }
-                        if (chunks.size > 1) {
-                            delay(80)
-                        }
-                    }
-                    if (success) return@withLock true
-                }
-            }
-            false
+            return@withLock sendChunksInternal(chunks)
         } catch (e: Exception) {
             Log.e(TAG, "Exception in sendPublicKey", e)
             false

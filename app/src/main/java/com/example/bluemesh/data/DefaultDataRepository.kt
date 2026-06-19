@@ -133,20 +133,15 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                     try {
                         // Check if message is already ACKed (marked as SENT) to avoid redundant sends
                         val isStillPending = try {
-                            val db = dbHelper.readableDatabase
-                            val cursor = db.rawQuery(
+                            dbHelper.readableDatabase.rawQuery(
                                 "SELECT status FROM QueuedMessages WHERE timestamp = ? AND is_from_me = 1",
                                 arrayOf(request.timestamp.toString())
-                            )
-                            var status: String? = null
-                            if (cursor.moveToFirst()) {
-                                status = cursor.getString(0)
-                            }
-                            cursor.close()
-                            if (status != null) {
-                                status == "PENDING"
-                            } else {
-                                _chatMessages.value.any { it.timestamp == request.timestamp && it.status == "PENDING" }
+                            ).use { cursor ->
+                                if (cursor.moveToFirst()) {
+                                    cursor.getString(0) == "PENDING"
+                                } else {
+                                    _chatMessages.value.any { it.timestamp == request.timestamp && it.status == "PENDING" }
+                                }
                             }
                         } catch (e: Exception) {
                             _chatMessages.value.any { it.timestamp == request.timestamp && it.status == "PENDING" }
