@@ -13,11 +13,11 @@ android {
         applicationId = "com.example.bluemesh"
         minSdk = 24
         targetSdk = 36
-        versionCode = 17
-        versionName = "27.9"
+        versionCode = 28
+        versionName = "28.10"
     }
 
-    val keystorePropertiesFile = file("C:/Users/Ricky/Desktop/BlueMesh Creds/keystore.properties")
+    val keystorePropertiesFile = rootProject.file("../BlueMesh Creds/keystore.properties")
     val keystoreProperties = Properties()
     if (keystorePropertiesFile.exists()) {
         keystoreProperties.load(keystorePropertiesFile.inputStream())
@@ -36,7 +36,7 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
