@@ -11,14 +11,19 @@
 // Define the Service UUID to filter and transmit on
 #define SERVICE_UUID "12345678-1234-5678-1234-567890abcdef"
 
+#include <queue>
+#include <atomic>
+#include <freertos/semphr.h>
+
 // Sliding window cache configuration
 const size_t CACHE_MAX_SIZE = 50;
 std::vector<uint32_t> messageCache;
 
 // State management variables
-volatile bool newPayloadAvailable = false;
-volatile bool advertisingMode = false;
-std::string payloadToAdvertise = "";
+std::queue<std::string> advertiseQueue;
+const size_t MAX_QUEUE_SIZE = 4;
+SemaphoreHandle_t stateMutex = nullptr;
+std::atomic<bool> advertisingMode(false);
 
 // Global BLE objects
 BLEScan* pBLEScan = nullptr;
@@ -41,14 +46,8 @@ bool isDuplicate(uint32_t messageId) {
 uint32_t totalUsersDetected = 0;
 uint32_t totalMessagesRelayed = 0;
 
-// BLE Scan Callback
 class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
-        // If we are currently transitioning or advertising, ignore scan results
-        if (advertisingMode || newPayloadAvailable) {
-            return;
-        }
-
         // Filter by Service UUID
         if (advertisedDevice.isAdvertisingService(BLEUUID(SERVICE_UUID))) {
             if (advertisedDevice.haveManufacturerData()) {
@@ -93,48 +92,54 @@ class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
                         msgId |= (uint8_t)mData[3] << 16;
                         msgId |= (uint8_t)mData[4] << 8;
                         msgId |= (uint8_t)mData[5];
-
+ 
                         // Extract Sender Hash (Big Endian)
                         uint32_t senderHash = 0;
                         senderHash |= (uint8_t)mData[6] << 24;
                         senderHash |= (uint8_t)mData[7] << 16;
                         senderHash |= (uint8_t)mData[8] << 8;
                         senderHash |= (uint8_t)mData[9];
-
+ 
                         // Extract Recipient Hash (Big Endian)
                         uint32_t recipientHash = 0;
                         recipientHash |= (uint8_t)mData[10] << 24;
                         recipientHash |= (uint8_t)mData[11] << 16;
                         recipientHash |= (uint8_t)mData[12] << 8;
                         recipientHash |= (uint8_t)mData[13];
-
+ 
                         std::string msgText = "";
                         if (mData.length() > 14) {
                             msgText = mData.substr(14);
                         }
-
-                        if (!isDuplicate(msgId)) {
-                            totalMessagesRelayed++;
-                            Serial.println("\n┌────────────────────────────────────────────────────────┐");
-                            Serial.printf("│ 📶 [RELAYING STORE-AND-FORWARD MESSAGE]                │\n");
-                            Serial.println("├────────────────────────────────────────────────────────┤");
-                            Serial.printf("│ Message ID:    %-40u │\n", msgId);
-                            Serial.printf("│ Sender Hash:   %08X                                 │\n", senderHash);
-                            Serial.printf("│ Recipient Hash:%08X                                 │\n", recipientHash);
-                            Serial.printf("│ Content:       \"%-38s\" │\n", msgText.c_str());
-                            Serial.printf("│ RSSI Strength: %-5d dBm                                │\n", advertisedDevice.getRSSI());
-                            Serial.printf("│ Relay Action:  Broadcasting for 4s at +9dBm            │\n");
-                            Serial.printf("│ Total Relayed: %-5u                                    │\n", totalMessagesRelayed);
-                            Serial.println("└────────────────────────────────────────────────────────┘\n");
-                            
-                            // Capture payload and flag transition
-                            payloadToAdvertise = mData;
-                            newPayloadAvailable = true;
-
-                            // Stop scanning immediately to free the RF hardware
-                            BLEDevice::getScan()->stop();
-                        } else {
-                            Serial.printf("[Relay] Intercepted message ID=%u (Duplicate, ignored)\n", msgId);
+ 
+                        if (stateMutex != nullptr && xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
+                            if (!isDuplicate(msgId)) {
+                                if (advertiseQueue.size() < MAX_QUEUE_SIZE) {
+                                    advertiseQueue.push(mData);
+                                    totalMessagesRelayed++;
+                                    Serial.println("\n┌────────────────────────────────────────────────────────┐");
+                                    Serial.printf("│ 📶 [RELAYING STORE-AND-FORWARD MESSAGE QUEUED]         │\n");
+                                    Serial.println("├────────────────────────────────────────────────────────┤");
+                                    Serial.printf("│ Message ID:    %-40u │\n", msgId);
+                                    Serial.printf("│ Sender Hash:   %08X                                 │\n", senderHash);
+                                    Serial.printf("│ Recipient Hash:%08X                                 │\n", recipientHash);
+                                    Serial.printf("│ Content:       \"%-38s\" │\n", msgText.c_str());
+                                    Serial.printf("│ RSSI Strength: %-5d dBm                                │\n", advertisedDevice.getRSSI());
+                                    Serial.printf("│ Queue Size:    %d/%d                                   │\n", advertiseQueue.size(), MAX_QUEUE_SIZE);
+                                    Serial.printf("│ Total Relayed: %-5u                                    │\n", totalMessagesRelayed);
+                                    Serial.println("└────────────────────────────────────────────────────────┘\n");
+                                    
+                                    // Stop scanning immediately to free the RF hardware if we aren't advertising
+                                    if (!advertisingMode) {
+                                        BLEDevice::getScan()->stop();
+                                    }
+                                } else {
+                                    Serial.printf("[Relay] Queue full, dropped message ID=%u\n", msgId);
+                                }
+                            } else {
+                                Serial.printf("[Relay] Intercepted message ID=%u (Duplicate, ignored)\n", msgId);
+                            }
+                            xSemaphoreGive(stateMutex);
                         }
                     }
                 }
@@ -147,6 +152,9 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     Serial.println("[Relay] Initializing BlueMesh ESP32 Infrastructure Relay...");
+
+    // Initialize mutex
+    stateMutex = xSemaphoreCreateMutex();
 
     // Initialize BLE stack
     BLEDevice::init("BlueMesh-Relay");
@@ -170,8 +178,21 @@ void setup() {
 }
 
 void loop() {
+    bool hasPayload = false;
+    std::string currentPayload = "";
+
+    // Safely check if we have a payload to advertise
+    if (stateMutex != nullptr && xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
+        if (!advertiseQueue.empty()) {
+            currentPayload = advertiseQueue.front();
+            advertiseQueue.pop();
+            hasPayload = true;
+        }
+        xSemaphoreGive(stateMutex);
+    }
+
     // If no new payload has been detected, run a scan cycle
-    if (!newPayloadAvailable) {
+    if (!hasPayload) {
         Serial.println("[Relay] Scanning for BlueMesh signals (Users / Messages)...");
 
         // Scan for 5 seconds. If a new payload is found, onResult() calls stop() 
@@ -180,22 +201,18 @@ void loop() {
         
         // Clear scan results to release memory and prevent heap fragmentation
         pBLEScan->clearResults();
-    }
-
-    // Process state transition if a new packet was captured
-    if (newPayloadAvailable) {
-        newPayloadAvailable = false;
+    } else {
+        // We have a payload, switch to advertising mode
         advertisingMode = true;
-
         Serial.println("[Relay] Switching to Advertising Mode...");
 
-        // Extract Message ID from payloadToAdvertise
+        // Extract Message ID from currentPayload
         uint32_t msgId = 0;
-        if (payloadToAdvertise.length() >= 6) {
-            msgId |= (uint8_t)payloadToAdvertise[2] << 24;
-            msgId |= (uint8_t)payloadToAdvertise[3] << 16;
-            msgId |= (uint8_t)payloadToAdvertise[4] << 8;
-            msgId |= (uint8_t)payloadToAdvertise[5];
+        if (currentPayload.length() >= 6) {
+            msgId |= (uint8_t)currentPayload[2] << 24;
+            msgId |= (uint8_t)currentPayload[3] << 16;
+            msgId |= (uint8_t)currentPayload[4] << 8;
+            msgId |= (uint8_t)currentPayload[5];
         }
         Serial.printf("[Relay] Broadcasting relayed message ID=%u at +9dBm for 4 seconds...\n", msgId);
 
@@ -210,7 +227,7 @@ void loop() {
         // Construct Scan Response Data (prevents exceeding the 31-byte BLE limit)
         BLEAdvertisementData oScanResponseData;
         // Add exact Manufacturer Data payload (Company ID + Message ID + Message Text)
-        oScanResponseData.setManufacturerData(String(payloadToAdvertise.data(), payloadToAdvertise.length()));
+        oScanResponseData.setManufacturerData(String(currentPayload.data(), currentPayload.length()));
         pAdvertising->setScanResponseData(oScanResponseData);
 
         // Start broadcasting
