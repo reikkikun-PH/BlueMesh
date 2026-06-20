@@ -1047,6 +1047,19 @@ class BluetoothHandler(private val context: Context) {
             return
         }
 
+        synchronized(connectedClients) {
+            val differentClients = connectedClients.filter { it.address != device.address }
+            for (clientDev in differentClients) {
+                Log.d(TAG, "Tearing down existing server connection to ${clientDev.address} before connecting to ${device.address}")
+                try {
+                    bluetoothGattServer?.cancelConnection(clientDev)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to cancel server connection to ${clientDev.address}", e)
+                }
+                handleServerDisconnect(clientDev)
+            }
+        }
+
         bluetoothGatt?.let {
             try {
                 it.disconnect()
