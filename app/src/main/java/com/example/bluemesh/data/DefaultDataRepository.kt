@@ -259,7 +259,9 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 } catch (e: Exception) {
                     Log.e("DataRepository", "Error in PeerReadyCallback launch", e)
                 }
-                sendPendingMessages(peerUuid)
+                if (peerUuid.isNotEmpty()) {
+                    sendPendingMessages(peerUuid)
+                }
             }
         }
 
@@ -719,7 +721,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     }
 
     override fun connectToPeerByUuid(uuid: String) {
-        bluetoothHandler.discoveredPeers.value.find { it.uuid == uuid }?.device?.let {
+        bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, uuid) }?.device?.let {
             bluetoothHandler.connectToPeer(it)
         }
     }

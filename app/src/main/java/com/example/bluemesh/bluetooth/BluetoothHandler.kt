@@ -463,7 +463,8 @@ class BluetoothHandler(private val context: Context) {
                         _connectionStatus.value = ConnectionStatus.CONNECTED
                         _isReady.value = true
                         updateDeviceStatus(device.address, ConnectionStatus.CONNECTED)
-                        _discoveredPeers.value.find { it.address == device.address }?.uuid?.let { onPeerReadyCallback?.invoke(it, device) }
+                        val peerUuid = _discoveredPeers.value.find { it.address == device.address }?.uuid ?: ""
+                        onPeerReadyCallback?.invoke(peerUuid, device)
                     }
                 }
                 if (responseNeeded) {
@@ -607,7 +608,8 @@ class BluetoothHandler(private val context: Context) {
                     _isReady.value = true
                     _connectionStatus.value = ConnectionStatus.CONNECTED
                     updateDeviceStatus(gatt.device.address, ConnectionStatus.CONNECTED)
-                    _discoveredPeers.value.find { it.address == gatt.device.address }?.uuid?.let { onPeerReadyCallback?.invoke(it, gatt.device) }
+                    val peerUuid = _discoveredPeers.value.find { it.address == gatt.device.address }?.uuid ?: ""
+                    onPeerReadyCallback?.invoke(peerUuid, gatt.device)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in onDescriptorWrite", e)
@@ -675,8 +677,11 @@ class BluetoothHandler(private val context: Context) {
                 delay(2000)
                 val now = System.currentTimeMillis()
                 _discoveredPeers.update { current ->
-                    current.filter { now - it.lastSeen < 25000 }
-                        .sortedWith(compareBy({ it.name.lowercase() }, { it.address }))
+                    current.filter { peer ->
+                        val isConnected = (bluetoothGatt?.device?.address == peer.address) || 
+                                          synchronized(connectedClients) { connectedClients.any { it.address == peer.address } }
+                        isConnected || (now - peer.lastSeen < 25000)
+                    }.sortedWith(compareBy({ it.name.lowercase() }, { it.address }))
                 }
                 
                 // Evict stale chunk reassembly buffers
@@ -1410,7 +1415,7 @@ class BluetoothHandler(private val context: Context) {
                 val matches = com.example.bluemesh.utils.uuidsMatch(peer.uuid, fullUuid) || peer.address == deviceAddress
                 if (matches) {
                     found = true
-                    peer.copy(uuid = fullUuid, address = deviceAddress)
+                    peer.copy(uuid = fullUuid, address = deviceAddress, lastSeen = System.currentTimeMillis())
                 } else peer
             }
             if (found) {
