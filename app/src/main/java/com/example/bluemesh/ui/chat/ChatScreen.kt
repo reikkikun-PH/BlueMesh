@@ -179,31 +179,44 @@ fun ChatScreen(
                 }
             }
 
-            // Input Row
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = textInput,
-                    onValueChange = { textInput = it },
-                    placeholder = { Text("Type a message...", color = Color(0xFF64748B)) },
-                    shape = RoundedCornerShape(24.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = Color(0xFF3B82F6),
-                        unfocusedBorderColor = Color(0xFF334155),
-                        focusedContainerColor = Color(0xFF1D263B),
-                        unfocusedContainerColor = Color(0xFF1D263B),
-                        cursorColor = Color(0xFF3B82F6)
-                    ),
+            // Input Area
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (textInput.length >= 200) {
+                    Text(
+                        text = "${textInput.length}/300",
+                        color = if (textInput.length == 300) Color(0xFFEF4444) else Color(0xFF3B82F6),
+                        fontSize = 11.sp,
+                        modifier = Modifier.align(Alignment.End).padding(end = 64.dp, bottom = 2.dp)
+                    )
+                }
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 8.dp)
-                )
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = textInput,
+                        onValueChange = {
+                            if (it.length <= 300) {
+                                textInput = it
+                            }
+                        },
+                        placeholder = { Text("Type a message...", color = Color(0xFF64748B)) },
+                        shape = RoundedCornerShape(24.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = Color(0xFF3B82F6),
+                            unfocusedBorderColor = Color(0xFF334155),
+                            focusedContainerColor = Color(0xFF1D263B),
+                            unfocusedContainerColor = Color(0xFF1D263B),
+                            cursorColor = Color(0xFF3B82F6)
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp)
+                    )
 
                 IconButton(
                     onClick = {
@@ -239,6 +252,7 @@ fun ChatScreen(
                 }
             }
         }
+    }
     }
 }
 

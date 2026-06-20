@@ -40,8 +40,6 @@ fun SecurityScreen(
     val repository = remember { DefaultDataRepository.getInstance(context.applicationContext) }
     var isShareLocationEnabled by remember { mutableStateOf(repository.isShareLocationEnabled()) }
     var showResetDialog by remember { mutableStateOf(false) }
-    var resetPasscodeVal by remember { mutableStateOf("") }
-    var resetErrorText by remember { mutableStateOf("") }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -314,8 +312,6 @@ fun SecurityScreen(
             AlertDialog(
                 onDismissRequest = {
                     showResetDialog = false
-                    resetPasscodeVal = ""
-                    resetErrorText = ""
                 },
                 containerColor = Color(0xFF1D263B),
                 title = {
@@ -326,58 +322,17 @@ fun SecurityScreen(
                     )
                 },
                 text = {
-                    Column {
-                        Text(
-                            text = "Warning: Resetting your User ID will remove your connection to people who added you to their contacts. They will not be able to message you until they add your new ID.",
-                            color = Color(0xFFEF4444),
-                            fontSize = 14.sp,
-                            modifier = Modifier.padding(bottom = 16.dp)
-                        )
-                        OutlinedTextField(
-                            value = resetPasscodeVal,
-                            onValueChange = {
-                                if (it.length <= 4 && it.all { char -> char.isDigit() }) {
-                                    resetPasscodeVal = it
-                                    resetErrorText = ""
-                                }
-                            },
-                            label = { Text("Enter your 4-digit passcode PIN", color = Color(0xFF94A3B8)) },
-                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                                keyboardType = androidx.compose.ui.text.input.KeyboardType.NumberPassword
-                            ),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Color(0xFF3B82F6),
-                                unfocusedBorderColor = Color(0xFF334155),
-                                focusedLabelColor = Color(0xFF3B82F6),
-                                cursorColor = Color(0xFF3B82F6),
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White
-                            ),
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        if (resetErrorText.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = resetErrorText,
-                                color = Color(0xFFEF4444),
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
+                    Text(
+                        text = "Warning: Resetting your User ID will remove your connection to people who added you to their contacts. They will not be able to message you until they add your new ID.",
+                        color = Color(0xFFEF4444),
+                        fontSize = 14.sp
+                    )
                 },
                 confirmButton = {
                     TextButton(
                         onClick = {
-                            if (repository.resetUserUuid(resetPasscodeVal)) {
-                                android.widget.Toast.makeText(context, "User ID successfully reset", android.widget.Toast.LENGTH_SHORT).show()
-                                showResetDialog = false
-                                resetPasscodeVal = ""
-                                resetErrorText = ""
-                            } else {
-                                resetErrorText = "Incorrect passcode PIN"
-                            }
+                            showResetDialog = false
+                            onNavigateToLock("verify_reset_id")
                         }
                     ) {
                         Text("Confirm Reset", color = Color(0xFFEF4444))
@@ -387,8 +342,6 @@ fun SecurityScreen(
                     TextButton(
                         onClick = {
                             showResetDialog = false
-                            resetPasscodeVal = ""
-                            resetErrorText = ""
                         }
                     ) {
                         Text("Cancel", color = Color.White)

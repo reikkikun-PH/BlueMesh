@@ -148,11 +148,12 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         if (bluetoothHandler.isReady.value) {
                             var sent = false
                             var retryCount = 0
-                            while (!sent && retryCount < 3) {
-                                if (retryCount > 0) delay(200)
-                                sent = bluetoothHandler.sendMessageSuspend(request.payload)
-                                retryCount++
-                            }
+                             while (!sent && retryCount < 3) {
+                                 if (retryCount > 0) delay(200)
+                                 val targetDevice = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, request.activeChatUuid) }?.device
+                                 sent = bluetoothHandler.sendMessageSuspend(request.payload, targetDevice)
+                                 retryCount++
+                             }
                             if (sent) {
                                 try {
                                     dbHelper.markMessageAsSent(request.timestamp)
@@ -217,9 +218,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             scope.launch {
                 try {
                     if (myKeyPair == null) myKeyPair = CryptoUtils.generateECKeyPair()
-                    myKeyPair?.let {
-                        bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded)
-                    }
+                     myKeyPair?.let {
+                         val peerDevice = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid) }?.device
+                         bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded, peerDevice)
+                     }
                 } catch (e: Exception) {
                     Log.e("DataRepository", "Error in PeerReadyCallback launch", e)
                 }
@@ -267,9 +269,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                     try {
                         if (myKeyPair == null) myKeyPair = CryptoUtils.generateECKeyPair()
                         myKeyPair?.let {
-                            if (!bluetoothHandler.isClient()) {
-                                bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded)
-                            }
+                             if (!bluetoothHandler.isClient()) {
+                                 val peerDevice = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, senderUuid) }?.device
+                                 bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded, peerDevice)
+                             }
                             try {
                                 val secret = CryptoUtils.generateSharedSecret(it.private, peerPublicKeyBytes)
                                 val aesKey = CryptoUtils.deriveAESKey(secret)
@@ -350,17 +353,18 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             }
                         }
 
-                        if (!message.isFromMe && senderUuid.isNotEmpty()) {
-                            if (isDuplicateMessage(senderUuid, msgTimestamp)) {
-                                scope.launch {
-                                    bluetoothHandler.sendAck(msgTimestamp)
-                                }
-                                return@collect
-                            }
-                            scope.launch {
-                                bluetoothHandler.sendAck(msgTimestamp)
-                            }
-                        }
+                         if (!message.isFromMe && senderUuid.isNotEmpty()) {
+                             val peerDevice = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, senderUuid) }?.device
+                             if (isDuplicateMessage(senderUuid, msgTimestamp)) {
+                                 scope.launch {
+                                     bluetoothHandler.sendAck(msgTimestamp, peerDevice)
+                                 }
+                                 return@collect
+                             }
+                             scope.launch {
+                                 bluetoothHandler.sendAck(msgTimestamp, peerDevice)
+                             }
+                         }
 
                         if (isPasscodeEnabled() && senderUuid.isNotEmpty() && !message.isFromMe) {
                             try {
@@ -503,9 +507,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     override fun connectToPeer(device: BluetoothDevice) = bluetoothHandler.connectToPeer(device)
     override fun disconnect() = bluetoothHandler.disconnect()
 
-    override fun sendMessage(text: String): Boolean {
-        if (activeChatUuid.isEmpty()) return false
-        val timestamp = System.currentTimeMillis()
+     override fun sendMessage(text: String): Boolean {
+         if (activeChatUuid.isEmpty()) return false
+         if (text.length > 300) return false
+         val timestamp = System.currentTimeMillis()
         val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
 
         if (!bluetoothHandler.isReady.value) {

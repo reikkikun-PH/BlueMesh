@@ -52,12 +52,14 @@ fun LockScreen(
     val titleText = when (mode) {
         "unlock" -> "Enter Passcode"
         "setup" -> if (setupStage == 1) "Create Passcode" else "Confirm Passcode"
+        "verify_reset_id" -> "Confirm ID Reset"
         else -> "Enter Passcode"
     }
 
     val subtitleText = when (mode) {
         "unlock" -> "Enter your 4-digit passcode to unlock BlueMesh"
         "setup" -> if (setupStage == 1) "Enter a 4-digit security PIN" else "Re-enter your new PIN to confirm"
+        "verify_reset_id" -> "Enter your existing 4-digit passcode PIN to confirm ID reset"
         else -> ""
     }
 
@@ -96,8 +98,12 @@ fun LockScreen(
             pinInput = ""
         } else if (pinInput.length == 4) {
             when (mode) {
-                "unlock", "verify", "verify_change" -> {
+                "unlock", "verify", "verify_change", "verify_reset_id" -> {
                     if (repository.verifyPasscode(pinInput)) {
+                        if (mode == "verify_reset_id") {
+                            repository.resetUserUuid(pinInput)
+                            Toast.makeText(context, "User ID successfully reset", Toast.LENGTH_SHORT).show()
+                        }
                         onSuccess()
                     } else {
                         val newRemaining = repository.getLockoutTimeRemaining()
