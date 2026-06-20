@@ -83,8 +83,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     }
 
     override val discoveredPeers: StateFlow<List<BluetoothPeer>> = bluetoothHandler.discoveredPeers
-    override val connectionStatus: StateFlow<ConnectionStatus> = bluetoothHandler.connectionStatus
-    override val isReady: StateFlow<Boolean> = bluetoothHandler.isReady
+    private val _activeConnectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
+    override val connectionStatus: StateFlow<ConnectionStatus> = _activeConnectionStatus.asStateFlow()
+    private val _activeIsReady = MutableStateFlow(false)
+    override val isReady: StateFlow<Boolean> = _activeIsReady.asStateFlow()
     override val isScanning: StateFlow<Boolean> = bluetoothHandler.isScanning
     override val isAdvertising: StateFlow<Boolean> = bluetoothHandler.isAdvertising
 
@@ -93,6 +95,21 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
     init {
         // User UUID is generated dynamically only when passcode is created or reset
+        bluetoothHandler.onPeerConnectionStatusChanged = { peerUuid, status ->
+            if (com.example.bluemesh.utils.uuidsMatch(peerUuid, activeChatUuid)) {
+                _activeConnectionStatus.value = status
+                _activeIsReady.value = (status == ConnectionStatus.CONNECTED)
+                if (status == ConnectionStatus.DISCONNECTED && isPasscodeEnabled()) {
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            _chatMessages.value = dbHelper.getMessagesForContact(activeChatUuid)
+                        } catch (e: Exception) {
+                            Log.e("DataRepository", "Error loading messages on peer disconnect", e)
+                        }
+                    }
+                }
+            }
+        }
 
         // Collect ACKs from peer and mark messages as SENT
         scope.launch(Dispatchers.IO) {
@@ -145,12 +162,13 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             continue
                         }
 
-                        if (bluetoothHandler.isReady.value) {
+                        if (bluetoothHandler.isPeerReady(request.activeChatUuid)) {
                             var sent = false
                             var retryCount = 0
                              while (!sent && retryCount < 3) {
                                  if (retryCount > 0) delay(200)
-                                 val targetDevice = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, request.activeChatUuid) }?.device
+                                 val targetPeer = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, request.activeChatUuid) }
+                                 val targetDevice = targetPeer?.device ?: bluetoothHandler.getConnectedDeviceByAddress(targetPeer?.address ?: "")
                                  sent = bluetoothHandler.sendMessageSuspend(request.payload, targetDevice)
                                  retryCount++
                              }
@@ -292,12 +310,13 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                                 val secret = CryptoUtils.generateSharedSecret(it.private, peerPublicKeyBytes)
                                 val aesKey = CryptoUtils.deriveAESKey(secret)
                                 sessionKeys[senderUuid] = aesKey
-                                if (isPasscodeEnabled()) {
-                                    try {
-                                        dbHelper.saveSessionKey(senderUuid, aesKey.toHex())
-                                    } catch (e: Exception) {
-                                        Log.e("DataRepository", "Error saving session key to database", e)
+                                try {
+                                    dbHelper.saveSessionKey(senderUuid, aesKey.toHex())
+                                    if (contactsDbCache.none { com.example.bluemesh.utils.uuidsMatch(it.first, senderUuid) }) {
+                                        contactsDbCache.add(Triple(senderUuid, "Temp_Peer", false))
                                     }
+                                } catch (e: Exception) {
+                                    Log.e("DataRepository", "Error saving session key to database", e)
                                 }
                                 sendPendingMessages(senderUuid)
                             } catch (e: Exception) {
@@ -471,10 +490,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             }
                         }
 
-                        if (connectionStatus.value == ConnectionStatus.DISCONNECTED) {
+                        if (!bluetoothHandler.isClient()) {
                             var attemptedConnection = false
                             // 1. High priority: reconnect to active chat uuid if discovered
-                            if (activeChatUuid.isNotEmpty()) {
+                            if (activeChatUuid.isNotEmpty() && !bluetoothHandler.isPeerConnected(activeChatUuid)) {
                                 val activePeer = peers.find { peer ->
                                     com.example.bluemesh.utils.uuidsMatch(activeChatUuid, peer.uuid)
                                 }
@@ -492,6 +511,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             // 2. Reconnect to peers with pending messages
                             if (!attemptedConnection) {
                                 for (peer in peers) {
+                                    if (bluetoothHandler.isPeerConnected(peer.uuid)) continue
                                     val hasPending = try {
                                         dbHelper.getPendingMessages(peer.uuid).isNotEmpty()
                                     } catch (e: Exception) {
@@ -514,6 +534,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             // 3. Connect to any detected peer automatically to receive messages
                             if (!attemptedConnection) {
                                 for (peer in peers) {
+                                    if (bluetoothHandler.isPeerConnected(peer.uuid)) continue
                                     val lastAttempt = lastConnectionAttempts[peer.uuid] ?: 0L
                                     if (System.currentTimeMillis() - lastAttempt > 10000) {
                                         lastConnectionAttempts[peer.uuid] = System.currentTimeMillis()
@@ -541,13 +562,13 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     override fun connectToPeer(device: BluetoothDevice) = bluetoothHandler.connectToPeer(device)
     override fun disconnect() = bluetoothHandler.disconnect()
 
-     override fun sendMessage(text: String): Boolean {
-         if (activeChatUuid.isEmpty()) return false
-         if (text.length > 300) return false
-         val timestamp = System.currentTimeMillis()
+    override fun sendMessage(text: String): Boolean {
+        if (activeChatUuid.isEmpty()) return false
+        if (text.length > 300) return false
+        val timestamp = System.currentTimeMillis()
         val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
 
-        if (!bluetoothHandler.isReady.value) {
+        if (!bluetoothHandler.isPeerReady(activeChatUuid)) {
             bluetoothHandler.advertiseMeshMessage(messageId, getUserUuid(), activeChatUuid, text)
         }
 
@@ -631,7 +652,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
     override fun getContacts(): List<BluetoothPeer> {
         val currentDiscovered = bluetoothHandler.discoveredPeers.value
-        return contactsDbCache.map { (uuid, name, isOfficialDb) ->
+        return contactsDbCache.filter { !it.second.startsWith("Temp_") }.map { (uuid, name, isOfficialDb) ->
             val discoveredPeer = currentDiscovered.find {
                 com.example.bluemesh.utils.uuidsMatch(uuid, it.uuid)
             }
@@ -674,7 +695,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
     override fun isContact(uuid: String): Boolean {
         return contactsDbCache.any {
-            com.example.bluemesh.utils.uuidsMatch(it.first, uuid)
+            com.example.bluemesh.utils.uuidsMatch(it.first, uuid) && !it.second.startsWith("Temp_")
         }
     }
 
@@ -682,6 +703,12 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         activeChatUuid = uuid
         if (uuid.isEmpty()) {
             disconnect()
+            _activeConnectionStatus.value = ConnectionStatus.DISCONNECTED
+            _activeIsReady.value = false
+        } else {
+            val status = bluetoothHandler.getConnectionStatusForPeer(uuid)
+            _activeConnectionStatus.value = status
+            _activeIsReady.value = (status == ConnectionStatus.CONNECTED)
         }
         _chatMessages.value = if (isPasscodeEnabled()) {
             dbHelper.getMessagesForContact(uuid)
@@ -900,17 +927,37 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     private fun getSessionKeyForUuid(uuid: String): ByteArray? {
         val direct = sessionKeys[uuid]
         if (direct != null) return direct
+
         val matchingKeys = sessionKeys.keys.filter {
             com.example.bluemesh.utils.uuidsMatch(it, uuid)
         }
-        return if (matchingKeys.size == 1) {
-            sessionKeys[matchingKeys.first()]
-        } else {
-            if (matchingKeys.size > 1) {
-                Log.w("DataRepository", "Ambiguous session keys found for UUID $uuid: $matchingKeys")
-            }
-            null
+        if (matchingKeys.size == 1) {
+            return sessionKeys[matchingKeys.first()]
+        } else if (matchingKeys.size > 1) {
+            Log.w("DataRepository", "Ambiguous session keys found in memory for UUID $uuid: $matchingKeys")
         }
+
+        try {
+            val dbKeyHex = dbHelper.getSessionKey(uuid)
+            if (!dbKeyHex.isNullOrEmpty()) {
+                val dbKey = dbKeyHex.hexToBytes()
+                sessionKeys[uuid] = dbKey
+                return dbKey
+            }
+            val stored = getContacts().find { com.example.bluemesh.utils.uuidsMatch(it.uuid, uuid) }
+            if (stored != null) {
+                val dbKeyHex2 = dbHelper.getSessionKey(stored.uuid)
+                if (!dbKeyHex2.isNullOrEmpty()) {
+                    val dbKey = dbKeyHex2.hexToBytes()
+                    sessionKeys[uuid] = dbKey
+                    sessionKeys[stored.uuid] = dbKey
+                    return dbKey
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("DataRepository", "Error loading session key from database for $uuid", e)
+        }
+        return null
     }
 
     private fun uuidMatchesHash(uuid: String, hash: Int): Boolean {

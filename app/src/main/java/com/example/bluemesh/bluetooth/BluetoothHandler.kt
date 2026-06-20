@@ -228,10 +228,55 @@ class BluetoothHandler(private val context: Context) {
     private val _isAdvertising = MutableStateFlow(false)
     val isAdvertising: StateFlow<Boolean> = _isAdvertising.asStateFlow()
 
+    private val deviceConnectionStatuses = java.util.concurrent.ConcurrentHashMap<String, ConnectionStatus>()
+    var onPeerConnectionStatusChanged: ((String, ConnectionStatus) -> Unit)? = null
     var onPeerReadyCallback: ((String, BluetoothDevice) -> Unit)? = null
     var onKeyExchangeReceived: ((String, ByteArray, BluetoothDevice) -> Unit)? = null
     var onPeerDisconnectedCallback: ((String) -> Unit)? = null
     var onBluetoothStateOn: (() -> Unit)? = null
+
+    fun getConnectionStatusForAddress(address: String): ConnectionStatus {
+        return deviceConnectionStatuses[address] ?: ConnectionStatus.DISCONNECTED
+    }
+
+    fun getConnectionStatusForPeer(peerUuid: String): ConnectionStatus {
+        val peer = _discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid) }
+            ?: return ConnectionStatus.DISCONNECTED
+        return getConnectionStatusForAddress(peer.address)
+    }
+
+    fun isPeerConnected(peerUuid: String): Boolean {
+        val peer = _discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid) }
+            ?: return false
+        val address = peer.address
+        if (bluetoothGatt?.device?.address == address) return true
+        if (connectedClients.any { it.address == address }) return true
+        return false
+    }
+
+    fun isPeerReady(peerUuid: String): Boolean {
+        val peer = _discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid) }
+            ?: return false
+        val address = peer.address
+        val clientGatt = bluetoothGatt
+        if (clientGatt != null && clientGatt.device.address == address) {
+            return _isReady.value
+        }
+        val isServerConnected = connectedClients.any { it.address == address }
+        if (isServerConnected) {
+            val cccd = cccdStates[address]
+            return cccd != null && cccd.isNotEmpty() && (cccd[0].toInt() and 0x01 != 0)
+        }
+        return false
+    }
+
+    private fun updateDeviceStatus(address: String, status: ConnectionStatus) {
+        deviceConnectionStatuses[address] = status
+        val peerUuid = _discoveredPeers.value.find { it.address == address }?.uuid
+        if (peerUuid != null) {
+            onPeerConnectionStatusChanged?.invoke(peerUuid, status)
+        }
+    }
 
     private fun showToast(message: String) {
         try {
@@ -345,6 +390,7 @@ class BluetoothHandler(private val context: Context) {
             _isReady.value = false
             negotiatedMtu = 23
             cccdStates.remove(device.address)
+            updateDeviceStatus(device.address, ConnectionStatus.DISCONNECTED)
             val peerUuid = _discoveredPeers.value.find { it.address == device.address }?.uuid
             if (peerUuid != null) {
                 onPeerDisconnectedCallback?.invoke(peerUuid)
@@ -371,6 +417,7 @@ class BluetoothHandler(private val context: Context) {
                         try { device.javaClass.getMethod("removeBond").invoke(device) } catch (e: Exception) {}
                     }
                     connectedClients.add(device)
+                    updateDeviceStatus(device.address, ConnectionStatus.SYNCHRONIZING)
                     _connectionStatus.value = ConnectionStatus.SYNCHRONIZING
                     startServerCccdTimeout(device)
                 }
@@ -415,6 +462,7 @@ class BluetoothHandler(private val context: Context) {
                         cancelServerCccdTimeout(device.address)
                         _connectionStatus.value = ConnectionStatus.CONNECTED
                         _isReady.value = true
+                        updateDeviceStatus(device.address, ConnectionStatus.CONNECTED)
                         _discoveredPeers.value.find { it.address == device.address }?.uuid?.let { onPeerReadyCallback?.invoke(it, device) }
                     }
                 }
@@ -452,6 +500,7 @@ class BluetoothHandler(private val context: Context) {
                 if (status != 0 || newState == BluetoothProfile.STATE_DISCONNECTED) {
                     try { gatt.close() } catch (e: Exception) {}
                     val disconnectedAddress = gatt.device.address
+                    updateDeviceStatus(disconnectedAddress, ConnectionStatus.DISCONNECTED)
                     if (bluetoothGatt == gatt) bluetoothGatt = null
                     isDisconnecting.set(false)
                     connectedServerDevice = null
@@ -472,6 +521,7 @@ class BluetoothHandler(private val context: Context) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     isDisconnecting.set(false)
                     connectedServerDevice = gatt.device
+                    updateDeviceStatus(gatt.device.address, ConnectionStatus.SYNCHRONIZING)
                     _connectionStatus.value = ConnectionStatus.SYNCHRONIZING
                     discoveryRetryCount = 0
                     scope.launch {
@@ -556,6 +606,7 @@ class BluetoothHandler(private val context: Context) {
                 if (descriptor.uuid == CCCD_UUID) {
                     _isReady.value = true
                     _connectionStatus.value = ConnectionStatus.CONNECTED
+                    updateDeviceStatus(gatt.device.address, ConnectionStatus.CONNECTED)
                     _discoveredPeers.value.find { it.address == gatt.device.address }?.uuid?.let { onPeerReadyCallback?.invoke(it, gatt.device) }
                 }
             } catch (e: Exception) {
@@ -1004,7 +1055,12 @@ class BluetoothHandler(private val context: Context) {
             try { device.javaClass.getMethod("removeBond").invoke(device) } catch (e: Exception) {}
         }
 
-        disconnect()
+        // Do not call global disconnect() to avoid kicking other GATT server clients.
+        // Instead, only reset the local client states.
+        connectedServerDevice = null
+        messageCharacteristic = null
+
+        updateDeviceStatus(device.address, ConnectionStatus.CONNECTING)
         _connectionStatus.value = ConnectionStatus.CONNECTING
         _isReady.value = false
         discoveryRetryCount = 0
@@ -1046,7 +1102,7 @@ class BluetoothHandler(private val context: Context) {
         connectionTimeoutJob?.cancel()
         currentWriteDeferred?.complete(false)
         currentWriteDeferred = null
-        
+
         synchronized(connectedClients) {
             connectedClients.forEach { device ->
                 try {
@@ -1054,8 +1110,13 @@ class BluetoothHandler(private val context: Context) {
                 } catch (e: Exception) {
                     Log.e(TAG, "Error cancelling client connection from server", e)
                 }
+                updateDeviceStatus(device.address, ConnectionStatus.DISCONNECTED)
             }
             connectedClients.clear()
+        }
+
+        bluetoothGatt?.device?.address?.let {
+            updateDeviceStatus(it, ConnectionStatus.DISCONNECTED)
         }
 
         val gatt = bluetoothGatt
@@ -1175,7 +1236,13 @@ class BluetoothHandler(private val context: Context) {
         }
 
         val server = bluetoothGattServer
-        val activeClient = targetDevice ?: synchronized(connectedClients) { connectedClients.firstOrNull() }
+        val activeClient = if (targetDevice != null) {
+            synchronized(connectedClients) { connectedClients.find { it.address == targetDevice.address } } ?: targetDevice
+        } else {
+            synchronized(connectedClients) {
+                if (connectedClients.size == 1) connectedClients.first() else null
+            }
+        }
         if (server != null && activeClient != null) {
             val characteristic = server.getService(SERVICE_UUID)?.getCharacteristic(MESSAGE_CHARACTERISTIC_UUID)
             if (characteristic != null) {
@@ -1360,6 +1427,8 @@ class BluetoothHandler(private val context: Context) {
                 )
             }
         }
+        val status = deviceConnectionStatuses[deviceAddress] ?: ConnectionStatus.DISCONNECTED
+        onPeerConnectionStatusChanged?.invoke(fullUuid, status)
     }
 
     private fun ByteArray.toHexString(): String = joinToString("") { "%02x".format(it) }
