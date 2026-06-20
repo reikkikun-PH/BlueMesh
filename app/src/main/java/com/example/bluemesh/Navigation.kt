@@ -78,9 +78,6 @@ fun MainNavigation() {
                 )
             }
             entry<Chat> { key ->
-                LaunchedEffect(key.peerUuid) {
-                    repository.setActiveChat(key.peerUuid)
-                }
                 ChatScreen(
                     peerUuid = key.peerUuid,
                     peerName = key.peerName,

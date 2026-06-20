@@ -69,11 +69,20 @@ fun ChatScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
 
+    LaunchedEffect(peerUuid) {
+        repository.setActiveChat(peerUuid)
+        val currentStatus = viewModel.connectionStatus.value
+        if (currentStatus != ConnectionStatus.CONNECTED && currentStatus != ConnectionStatus.SYNCHRONIZING) {
+            viewModel.connect()
+        }
+    }
+
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
-                    if (status != ConnectionStatus.CONNECTED && status != ConnectionStatus.SYNCHRONIZING) {
+                    val currentStatus = viewModel.connectionStatus.value
+                    if (currentStatus != ConnectionStatus.CONNECTED && currentStatus != ConnectionStatus.SYNCHRONIZING) {
                         viewModel.connect()
                     }
                 }
