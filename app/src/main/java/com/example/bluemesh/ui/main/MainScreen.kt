@@ -71,7 +71,7 @@ fun MainScreen(
                     }
                 }
                 Lifecycle.Event.ON_PAUSE -> {
-                    viewModel.stopScanning()
+                    // Keep scanning active in paused/background states to allow background auto-connections to function
                 }
                 else -> {}
             }
