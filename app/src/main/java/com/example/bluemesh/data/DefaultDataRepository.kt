@@ -137,6 +137,32 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         }
 
 
+        // Connection healing checker: monitors for stuck PENDING messages and resets hung connections
+        scope.launch(Dispatchers.IO) {
+            while (true) {
+                try {
+                    delay(5000)
+                    val currentChat = activeChatUuid
+                    val status = _activeConnectionStatus.value
+                    if (currentChat.isNotEmpty() && (status == ConnectionStatus.CONNECTED || status == ConnectionStatus.SYNCHRONIZING)) {
+                        val now = System.currentTimeMillis()
+                        val hasStuckPendingMessage = _chatMessages.value.any { msg ->
+                            msg.isFromMe && msg.status == "PENDING" && (now - msg.timestamp > 15000)
+                        }
+                        if (hasStuckPendingMessage) {
+                            Log.w("DataRepository", "Connection health check: message stuck in PENDING for >15s while connection is $status. Resetting connection.")
+                            bluetoothHandler.disconnect()
+                            delay(500)
+                            connectToPeerByUuid(currentChat)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("DataRepository", "Error in connection healing loop", e)
+                }
+            }
+        }
+
+
         // Message send queue consumer: processes one message at a time
         scope.launch(Dispatchers.IO) {
             try {
@@ -572,6 +598,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
         if (!bluetoothHandler.isPeerReady(activeChatUuid)) {
             bluetoothHandler.advertiseMeshMessage(messageId, getUserUuid(), activeChatUuid, text)
+            if (_activeConnectionStatus.value == ConnectionStatus.DISCONNECTED) {
+                Log.d("DataRepository", "Peer not ready and disconnected. Triggering reconnect on send.")
+                connectToPeerByUuid(activeChatUuid)
+            }
         }
 
         // Optimistically add to chat UI as PENDING, will be updated to SENT by queue consumer

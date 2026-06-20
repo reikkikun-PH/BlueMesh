@@ -86,6 +86,8 @@ class BluetoothHandler(private val context: Context) {
     private var scanLoopJob: Job? = null
     private var connectionTimeoutJob: Job? = null
     private val serverCccdTimeoutJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private var clientSyncTimeoutJob: Job? = null
+    private var isCurrentConnectionRetry = false
     private val isDisconnecting = java.util.concurrent.atomic.AtomicBoolean(false)
     private var lastScanStartTime: Long = 0
     private var discoveryRetryCount = 0
@@ -499,8 +501,16 @@ class BluetoothHandler(private val context: Context) {
                 connectionTimeoutJob?.cancel()
                 
                 if (status != 0 || newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    try { gatt.close() } catch (e: Exception) {}
+                    cancelClientSyncTimeout()
                     val disconnectedAddress = gatt.device.address
+                    val wasAttemptingConnection = (_connectionStatus.value == ConnectionStatus.CONNECTING || _connectionStatus.value == ConnectionStatus.SYNCHRONIZING)
+                    
+                    if (status != 0 && wasAttemptingConnection) {
+                        Log.w(TAG, "GATT connection failure status $status for $disconnectedAddress. Healing and retrying.")
+                        refreshDeviceCache(gatt)
+                    }
+                    
+                    try { gatt.close() } catch (e: Exception) {}
                     updateDeviceStatus(disconnectedAddress, ConnectionStatus.DISCONNECTED)
                     if (bluetoothGatt == gatt) bluetoothGatt = null
                     isDisconnecting.set(false)
@@ -516,6 +526,14 @@ class BluetoothHandler(private val context: Context) {
                     }
                     currentWriteDeferred?.complete(false)
                     currentWriteDeferred = null
+                    
+                    if (status != 0 && wasAttemptingConnection && !isCurrentConnectionRetry) {
+                        scope.launch {
+                            delay(500)
+                            Log.d(TAG, "Triggering connection retry for $disconnectedAddress")
+                            connectToPeerInternal(gatt.device, true)
+                        }
+                    }
                     return
                 }
 
@@ -525,6 +543,7 @@ class BluetoothHandler(private val context: Context) {
                     updateDeviceStatus(gatt.device.address, ConnectionStatus.SYNCHRONIZING)
                     _connectionStatus.value = ConnectionStatus.SYNCHRONIZING
                     discoveryRetryCount = 0
+                    startClientSyncTimeout(gatt)
                     scope.launch {
                         try {
                             gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
@@ -551,7 +570,22 @@ class BluetoothHandler(private val context: Context) {
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             try {
-                if (status != 0) return
+                if (status != 0) {
+                    if (discoveryRetryCount < 1) {
+                        discoveryRetryCount++
+                        scope.launch {
+                            try {
+                                Log.w(TAG, "onServicesDiscovered error status $status. Refreshing cache and retrying.")
+                                refreshDeviceCache(gatt)
+                                delay(1000)
+                                gatt.discoverServices()
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error retrying discoverServices on status error", e)
+                            }
+                        }
+                    }
+                    return
+                }
                 val characteristic = gatt.getService(SERVICE_UUID)?.getCharacteristic(MESSAGE_CHARACTERISTIC_UUID)
                 
                 if (characteristic != null) {
@@ -587,6 +621,8 @@ class BluetoothHandler(private val context: Context) {
                         discoveryRetryCount++
                         scope.launch {
                             try {
+                                Log.w(TAG, "Chat service not found in discovery. Refreshing cache and retrying.")
+                                refreshDeviceCache(gatt)
                                 delay(1000)
                                 gatt.discoverServices()
                             } catch (e: Exception) {
@@ -646,6 +682,35 @@ class BluetoothHandler(private val context: Context) {
                 Log.e(TAG, "Error in onCharacteristicChanged (Tiramisu)", e)
             }
         }
+    }
+
+    private fun startClientSyncTimeout(gatt: BluetoothGatt) {
+        clientSyncTimeoutJob?.cancel()
+        clientSyncTimeoutJob = scope.launch {
+            try {
+                delay(10000) // 10-second timeout
+                if (_connectionStatus.value == ConnectionStatus.SYNCHRONIZING) {
+                    Log.w(TAG, "Client synchronization timeout for ${gatt.device.address}. Healing connection.")
+                    refreshDeviceCache(gatt)
+                    disconnect()
+                    delay(300)
+                    if (!isCurrentConnectionRetry) {
+                        connectToPeerInternal(gatt.device, true)
+                    } else {
+                        _connectionStatus.value = ConnectionStatus.DISCONNECTED
+                        updateDeviceStatus(gatt.device.address, ConnectionStatus.DISCONNECTED)
+                        showToast("Failed to synchronize with peer. Please try again.")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in clientSyncTimeoutJob", e)
+            }
+        }
+    }
+
+    private fun cancelClientSyncTimeout() {
+        clientSyncTimeoutJob?.cancel()
+        clientSyncTimeoutJob = null
     }
 
     private fun startServerCccdTimeout(device: BluetoothDevice) {
@@ -1034,6 +1099,7 @@ class BluetoothHandler(private val context: Context) {
     private fun connectToPeerInternal(device: BluetoothDevice, isRetry: Boolean) {
         if (!hasPermissions()) return
         connectionTimeoutJob?.cancel()
+        isCurrentConnectionRetry = isRetry
         
         val isClientConnected = bluetoothGatt?.device?.address == device.address
         val isServerConnected = connectedClients.any { it.address == device.address }
@@ -1118,6 +1184,7 @@ class BluetoothHandler(private val context: Context) {
 
     fun disconnect() {
         connectionTimeoutJob?.cancel()
+        cancelClientSyncTimeout()
         currentWriteDeferred?.complete(false)
         currentWriteDeferred = null
 
