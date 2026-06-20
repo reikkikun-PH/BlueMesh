@@ -343,8 +343,8 @@ fun MainScreen(
                         modifier = Modifier.weight(1f)
                     ) {
                         items(peers, key = { it.uuid.ifEmpty { it.address } }) { peer ->
-                            val isContact = remember(peer.uuid) { repository.isContact(peer.uuid) }
-                            var isContactState by remember { mutableStateOf(isContact) }
+                            val isContact = remember(peer.uuid, peers) { repository.isContact(peer.uuid) }
+                            var isContactState by remember(peer.uuid, isContact) { mutableStateOf(isContact) }
                             
                             PeerItem(
                                 peer = peer,
