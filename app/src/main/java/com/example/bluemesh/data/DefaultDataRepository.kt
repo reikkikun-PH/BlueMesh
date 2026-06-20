@@ -504,8 +504,22 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                                             lastConnectionAttempts[peer.uuid] = System.currentTimeMillis()
                                             Log.d("DataRepository", "Auto-reconnecting to peer with pending messages: ${peer.uuid}")
                                             connectToPeerByUuid(peer.uuid)
+                                            attemptedConnection = true
                                             break
                                         }
+                                    }
+                                }
+                            }
+
+                            // 3. Connect to any detected peer automatically to receive messages
+                            if (!attemptedConnection) {
+                                for (peer in peers) {
+                                    val lastAttempt = lastConnectionAttempts[peer.uuid] ?: 0L
+                                    if (System.currentTimeMillis() - lastAttempt > 10000) {
+                                        lastConnectionAttempts[peer.uuid] = System.currentTimeMillis()
+                                        Log.d("DataRepository", "Auto-connecting to detected peer to listen for messages: ${peer.uuid}")
+                                        connectToPeerByUuid(peer.uuid)
+                                        break
                                     }
                                 }
                             }

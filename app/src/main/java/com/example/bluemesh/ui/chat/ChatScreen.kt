@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -159,6 +160,21 @@ fun ChatScreen(
                         color = statusColor,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Medium
+                    )
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                IconButton(
+                    onClick = {
+                        viewModel.clearChatHistory()
+                    },
+                    colors = IconButtonDefaults.iconButtonColors(contentColor = Color(0xFFEF4444))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete Chat",
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             }
