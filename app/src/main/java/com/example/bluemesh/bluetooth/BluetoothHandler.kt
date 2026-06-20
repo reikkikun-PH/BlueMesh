@@ -91,7 +91,7 @@ class BluetoothHandler(private val context: Context) {
     private val isDisconnecting = java.util.concurrent.atomic.AtomicBoolean(false)
     private var lastScanStartTime: Long = 0
     private var discoveryRetryCount = 0
-    @Volatile private var negotiatedMtu = 23
+    private val deviceMtus = java.util.concurrent.ConcurrentHashMap<String, Int>()
     @Volatile private var currentWriteDeferred: CompletableDeferred<Boolean>? = null
     
     private val messageIdCache = java.util.Collections.synchronizedList(mutableListOf<Int>())
@@ -390,7 +390,7 @@ class BluetoothHandler(private val context: Context) {
             cancelServerCccdTimeout(device.address)
             connectedClients.remove(device)
             _isReady.value = false
-            negotiatedMtu = 23
+            deviceMtus.remove(device.address)
             cccdStates.remove(device.address)
             updateDeviceStatus(device.address, ConnectionStatus.DISCONNECTED)
             val peerUuid = _discoveredPeers.value.find { it.address == device.address }?.uuid
@@ -488,7 +488,7 @@ class BluetoothHandler(private val context: Context) {
 
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
             try {
-                negotiatedMtu = mtu
+                deviceMtus[device.address] = mtu
             } catch (e: Exception) {
                 Log.e(TAG, "Error in gattServerCallback.onMtuChanged", e)
             }
@@ -503,6 +503,7 @@ class BluetoothHandler(private val context: Context) {
                 if (status != 0 || newState == BluetoothProfile.STATE_DISCONNECTED) {
                     cancelClientSyncTimeout()
                     val disconnectedAddress = gatt.device.address
+                    deviceMtus.remove(disconnectedAddress)
                     val wasAttemptingConnection = (_connectionStatus.value == ConnectionStatus.CONNECTING || _connectionStatus.value == ConnectionStatus.SYNCHRONIZING)
                     
                     if (status != 0 && wasAttemptingConnection) {
@@ -521,7 +522,6 @@ class BluetoothHandler(private val context: Context) {
                     }
                     if (connectedClients.isEmpty()) {
                         _isReady.value = false
-                        negotiatedMtu = 23
                         _connectionStatus.value = ConnectionStatus.DISCONNECTED
                     }
                     currentWriteDeferred?.complete(false)
@@ -562,7 +562,9 @@ class BluetoothHandler(private val context: Context) {
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             try {
-                negotiatedMtu = if (status == BluetoothGatt.GATT_SUCCESS) mtu else 23
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    deviceMtus[gatt.device.address] = mtu
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in onMtuChanged callback", e)
             }
@@ -1148,7 +1150,7 @@ class BluetoothHandler(private val context: Context) {
         _connectionStatus.value = ConnectionStatus.CONNECTING
         _isReady.value = false
         discoveryRetryCount = 0
-        negotiatedMtu = 23
+        deviceMtus.remove(device.address)
 
         try {
             val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -1187,6 +1189,7 @@ class BluetoothHandler(private val context: Context) {
         cancelClientSyncTimeout()
         currentWriteDeferred?.complete(false)
         currentWriteDeferred = null
+        deviceMtus.clear()
 
         synchronized(connectedClients) {
             connectedClients.forEach { device ->
@@ -1390,7 +1393,9 @@ class BluetoothHandler(private val context: Context) {
                 }
             }
 
-            val maxPayloadSize = java.lang.Math.min(negotiatedMtu - 6, 509) // GATT attribute value is capped at 512 bytes, overhead is 3 bytes BLE + 3 bytes chunk header
+            val targetAddress = targetDevice?.address ?: getConnectedDeviceAddress()
+            val deviceMtu = if (targetAddress != null) deviceMtus[targetAddress] ?: 23 else 23
+            val maxPayloadSize = java.lang.Math.min(deviceMtu - 6, 509) // GATT attribute value is capped at 512 bytes, overhead is 3 bytes BLE + 3 bytes chunk header
             val rawChunks = payload.toList().chunked(maxPayloadSize).map { it.toByteArray() }
             val totalChunks = rawChunks.size
             val chunks = rawChunks.mapIndexed { index, data ->
@@ -1445,7 +1450,9 @@ class BluetoothHandler(private val context: Context) {
                 System.arraycopy(publicKeyBytes, 0, this, 17, publicKeyBytes.size)
             }
 
-            val maxPayloadSize = java.lang.Math.min(negotiatedMtu - 6, 509) // GATT attribute value is capped at 512 bytes, overhead is 3 bytes BLE + 3 bytes chunk header
+            val targetAddress = targetDevice?.address ?: getConnectedDeviceAddress()
+            val deviceMtu = if (targetAddress != null) deviceMtus[targetAddress] ?: 23 else 23
+            val maxPayloadSize = java.lang.Math.min(deviceMtu - 6, 509) // GATT attribute value is capped at 512 bytes, overhead is 3 bytes BLE + 3 bytes chunk header
             val rawChunks = payload.toList().chunked(maxPayloadSize).map { it.toByteArray() }
             val totalChunks = rawChunks.size
             val chunks = rawChunks.mapIndexed { index, data ->
@@ -1464,7 +1471,7 @@ class BluetoothHandler(private val context: Context) {
         }
     }
 
-    suspend fun sendMessageEncrypted(ciphertext: ByteArray, messageId: Int): Boolean {
+    suspend fun sendMessageEncrypted(ciphertext: ByteArray, messageId: Int, targetDevice: BluetoothDevice? = null): Boolean {
         val payload = ByteArray(ciphertext.size + 6).apply {
             this[0] = 1
             this[1] = 2
@@ -1474,7 +1481,7 @@ class BluetoothHandler(private val context: Context) {
             System.arraycopy(ciphertext, 0, this, 6, ciphertext.size)
         }
         // Reuse the serialized send path
-        return sendMessage(payload)
+        return sendMessage(payload, targetDevice)
     }
 
     fun isClient(): Boolean = bluetoothGatt != null
