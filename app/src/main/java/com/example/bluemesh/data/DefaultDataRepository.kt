@@ -234,7 +234,24 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 } catch (e: Exception) {
                     Log.e("DataRepository", "Error in PeerReadyCallback launch", e)
                 }
-                sendPendingMessages(peerUuid)
+                if (peerUuid.isNotEmpty()) {
+                    sendPendingMessages(peerUuid)
+                }
+            }
+        }
+
+        bluetoothHandler.onPeerDisconnectedCallback = { peerUuid ->
+            scope.launch {
+                try {
+                    sessionKeys.remove(peerUuid)
+                    val matchingKeys = sessionKeys.keys.filter { com.example.bluemesh.utils.uuidsMatch(it, peerUuid) }
+                    for (k in matchingKeys) {
+                        sessionKeys.remove(k)
+                    }
+                    Log.d("DataRepository", "Cleared session key for peer: $peerUuid")
+                } catch (e: Exception) {
+                    Log.e("DataRepository", "Error clearing session key on disconnect", e)
+                }
             }
         }
 
@@ -848,10 +865,15 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     private fun getSessionKeyForUuid(uuid: String): ByteArray? {
         val direct = sessionKeys[uuid]
         if (direct != null) return direct
-        val matchKey = sessionKeys.keys.find {
+        val matches = sessionKeys.keys.filter {
             com.example.bluemesh.utils.uuidsMatch(it, uuid)
         }
-        return if (matchKey != null) sessionKeys[matchKey] else null
+        if (matches.size == 1) {
+            return sessionKeys[matches.first()]
+        } else if (matches.size > 1) {
+            Log.w("DataRepository", "Multiple ambiguous session keys found for UUID $uuid: $matches. Skipping fuzzy match.")
+        }
+        return null
     }
 
     private fun uuidMatchesHash(uuid: String, hash: Int): Boolean {

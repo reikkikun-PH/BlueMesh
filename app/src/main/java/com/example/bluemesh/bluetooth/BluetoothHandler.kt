@@ -233,6 +233,7 @@ class BluetoothHandler(private val context: Context) {
 
     var onPeerReadyCallback: ((String) -> Unit)? = null
     var onKeyExchangeReceived: ((String, ByteArray) -> Unit)? = null
+    var onPeerDisconnectedCallback: ((String) -> Unit)? = null
     var onBluetoothStateOn: (() -> Unit)? = null
 
     private fun showToast(message: String) {
@@ -335,17 +336,15 @@ class BluetoothHandler(private val context: Context) {
 
     private fun handleServerDisconnect(device: BluetoothDevice) {
         try {
-            if (connectedClientDevice?.address == device.address) {
-                connectedClientDevice = null
+            val peerUuid = _discoveredPeers.value.find { it.address == device.address }?.uuid
+            if (peerUuid != null) {
+                onPeerDisconnectedCallback?.invoke(peerUuid)
             }
+            connectedClientDevice = null
             _isReady.value = false
             negotiatedMtu = 23
             cccdStates.remove(device.address)
-            if (connectedServerDevice == null && connectedClientDevice == null) {
-                _connectionStatus.value = ConnectionStatus.DISCONNECTED
-            }
-            
-            // Cancel any pending writes immediately
+            _connectionStatus.value = ConnectionStatus.DISCONNECTED
             writeCompletionDeferred?.complete(false)
             writeCompletionDeferred = null
         } catch (e: Exception) {
@@ -439,6 +438,11 @@ class BluetoothHandler(private val context: Context) {
                 connectionTimeoutJob?.cancel()
                 
                 if (status != 0 || newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    val disconnectedAddress = gatt.device.address
+                    val peerUuid = _discoveredPeers.value.find { it.address == disconnectedAddress }?.uuid
+                    if (peerUuid != null) {
+                        onPeerDisconnectedCallback?.invoke(peerUuid)
+                    }
                     try { gatt.close() } catch (e: Exception) {}
                     if (bluetoothGatt == gatt) bluetoothGatt = null
                     isDisconnecting.set(false)
