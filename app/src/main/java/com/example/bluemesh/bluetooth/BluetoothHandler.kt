@@ -336,6 +336,7 @@ class BluetoothHandler(private val context: Context) {
 
     private fun handleServerDisconnect(device: BluetoothDevice) {
         try {
+            cancelServerCccdTimeout(device.address)
             val peerUuid = _discoveredPeers.value.find { it.address == device.address }?.uuid
             if (peerUuid != null) {
                 onPeerDisconnectedCallback?.invoke(peerUuid)
@@ -352,6 +353,28 @@ class BluetoothHandler(private val context: Context) {
         }
     }
 
+    private val serverCccdTimeoutJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    private fun startServerCccdTimeout(device: BluetoothDevice) {
+        serverCccdTimeoutJobs[device.address]?.cancel()
+        serverCccdTimeoutJobs[device.address] = scope.launch {
+            delay(10000) // 10-second timeout
+            if (connectedClientDevice?.address == device.address && cccdStates[device.address] == null) {
+                Log.w(TAG, "Server CCCD write timeout for ${device.address}. Disconnecting.")
+                try {
+                    bluetoothGattServer?.cancelConnection(device)
+                } catch (e: Exception) {}
+                handleServerDisconnect(device)
+            }
+            serverCccdTimeoutJobs.remove(device.address)
+        }
+    }
+
+    private fun cancelServerCccdTimeout(deviceAddress: String) {
+        serverCccdTimeoutJobs[deviceAddress]?.cancel()
+        serverCccdTimeoutJobs.remove(deviceAddress)
+    }
+
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             try {
@@ -365,9 +388,8 @@ class BluetoothHandler(private val context: Context) {
                         try { device.javaClass.getMethod("removeBond").invoke(device) } catch (e: Exception) {}
                     }
                     connectedClientDevice = device
-                    _connectionStatus.value = ConnectionStatus.CONNECTED
-                    _isReady.value = true
-                    _discoveredPeers.value.find { it.address == device.address }?.uuid?.let { onPeerReadyCallback?.invoke(it) }
+                    _connectionStatus.value = ConnectionStatus.SYNCHRONIZING
+                    startServerCccdTimeout(device)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in gattServerCallback.onConnectionStateChange", e)
@@ -405,6 +427,14 @@ class BluetoothHandler(private val context: Context) {
             try {
                 if (descriptor.uuid == CCCD_UUID && value != null) {
                     cccdStates[device.address] = value
+                    val isNotificationEnabled = value.isNotEmpty() && (value[0].toInt() and 0x01 != 0)
+                    if (isNotificationEnabled) {
+                        cancelServerCccdTimeout(device.address)
+                        _connectionStatus.value = ConnectionStatus.CONNECTED
+                        _isReady.value = true
+                        val peerUuid = _discoveredPeers.value.find { it.address == device.address }?.uuid ?: ""
+                        onPeerReadyCallback?.invoke(peerUuid)
+                    }
                 }
                 if (responseNeeded) {
                     bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
@@ -544,7 +574,8 @@ class BluetoothHandler(private val context: Context) {
                 if (descriptor.uuid == CCCD_UUID) {
                     _isReady.value = true
                     _connectionStatus.value = ConnectionStatus.CONNECTED
-                    _discoveredPeers.value.find { it.address == gatt.device.address }?.uuid?.let { onPeerReadyCallback?.invoke(it) }
+                    val peerUuid = _discoveredPeers.value.find { it.address == gatt.device.address }?.uuid ?: ""
+                    onPeerReadyCallback?.invoke(peerUuid)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in onDescriptorWrite", e)
