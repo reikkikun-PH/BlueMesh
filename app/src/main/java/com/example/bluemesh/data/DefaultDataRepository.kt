@@ -214,13 +214,12 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             }
         }
 
-        bluetoothHandler.onPeerReadyCallback = { peerUuid ->
+        bluetoothHandler.onPeerReadyCallback = { peerUuid, device ->
             scope.launch {
                 try {
                     if (myKeyPair == null) myKeyPair = CryptoUtils.generateECKeyPair()
                      myKeyPair?.let {
-                         val peerDevice = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid) }?.device
-                         bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded, peerDevice)
+                          bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded, device)
                      }
                 } catch (e: Exception) {
                     Log.e("DataRepository", "Error in PeerReadyCallback launch", e)
@@ -229,10 +228,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             }
         }
 
-        bluetoothHandler.onKeyExchangeReceived = { senderUuid, peerPublicKeyBytes ->
+        bluetoothHandler.onKeyExchangeReceived = { senderUuid, peerPublicKeyBytes, device ->
             scope.launch(Dispatchers.IO) {
                 try {
-                    bluetoothHandler.updatePeerUuid(senderUuid)
+                    bluetoothHandler.updatePeerUuid(senderUuid, device.address)
                     
                     // Upgrade any matching contact UUID in database tables
                     try {
@@ -270,8 +269,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         if (myKeyPair == null) myKeyPair = CryptoUtils.generateECKeyPair()
                         myKeyPair?.let {
                              if (!bluetoothHandler.isClient()) {
-                                 val peerDevice = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, senderUuid) }?.device
-                                 bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded, peerDevice)
+                                 bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded, device)
                              }
                             try {
                                 val secret = CryptoUtils.generateSharedSecret(it.private, peerPublicKeyBytes)
@@ -302,8 +300,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             try {
                 bluetoothHandler.messages.collect { message ->
                     try {
-                        val connectedAddress = bluetoothHandler.getConnectedDeviceAddress()
-                        val peer = bluetoothHandler.discoveredPeers.value.find { it.address == connectedAddress }
+                        val connectedAddress = message.senderAddress
+                        val peer = if (connectedAddress != null) {
+                            bluetoothHandler.discoveredPeers.value.find { it.address == connectedAddress }
+                        } else null
                         
                         val senderUuid = if (message.senderHash != null) {
                             val myUuidHash = getUserUuid().hashCode()
@@ -353,18 +353,22 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             }
                         }
 
-                         if (!message.isFromMe && senderUuid.isNotEmpty()) {
-                             val peerDevice = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, senderUuid) }?.device
-                             if (isDuplicateMessage(senderUuid, msgTimestamp)) {
-                                 scope.launch {
-                                     bluetoothHandler.sendAck(msgTimestamp, peerDevice)
-                                 }
-                                 return@collect
-                             }
-                             scope.launch {
-                                 bluetoothHandler.sendAck(msgTimestamp, peerDevice)
-                             }
-                         }
+                          if (!message.isFromMe && senderUuid.isNotEmpty()) {
+                              val peerDevice = if (connectedAddress != null) {
+                                  bluetoothHandler.getConnectedDeviceByAddress(connectedAddress)
+                              } else {
+                                  bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, senderUuid) }?.device
+                              }
+                              if (isDuplicateMessage(senderUuid, msgTimestamp)) {
+                                  scope.launch {
+                                      bluetoothHandler.sendAck(msgTimestamp, peerDevice)
+                                  }
+                                  return@collect
+                              }
+                              scope.launch {
+                                  bluetoothHandler.sendAck(msgTimestamp, peerDevice)
+                              }
+                          }
 
                         if (isPasscodeEnabled() && senderUuid.isNotEmpty() && !message.isFromMe) {
                             try {
@@ -406,8 +410,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                                 }
                             }
                         } else if (status == ConnectionStatus.CONNECTING || status == ConnectionStatus.CONNECTED || status == ConnectionStatus.SYNCHRONIZING) {
-                            stopScan()
-                            stopAdvertising()
+                            // Keep scanning and advertising active to support concurrent multi-user connections
                         }
                     } catch (e: Exception) {
                         Log.e("DataRepository", "Error processing connection status change", e)

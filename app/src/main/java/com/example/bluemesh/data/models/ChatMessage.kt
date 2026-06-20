@@ -6,5 +6,6 @@ data class ChatMessage(
     val timestamp: Long,
     val status: String = "SENT",
     val senderHash: Int? = null,
-    val recipientHash: Int? = null
+    val recipientHash: Int? = null,
+    val senderAddress: String? = null
 )
