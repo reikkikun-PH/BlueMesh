@@ -341,7 +341,7 @@ fun SecurityScreen(
                                     resetErrorText = ""
                                 }
                             },
-                            label = { Text("Enter Passcode", color = Color(0xFF94A3B8)) },
+                            label = { Text("Enter your 4-digit passcode PIN", color = Color(0xFF94A3B8)) },
                             visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                                 keyboardType = androidx.compose.ui.text.input.KeyboardType.NumberPassword
@@ -376,7 +376,7 @@ fun SecurityScreen(
                                 resetPasscodeVal = ""
                                 resetErrorText = ""
                             } else {
-                                resetErrorText = "Incorrect passcode"
+                                resetErrorText = "Incorrect passcode PIN"
                             }
                         }
                     ) {

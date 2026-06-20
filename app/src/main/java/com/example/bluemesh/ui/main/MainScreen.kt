@@ -70,6 +70,9 @@ fun MainScreen(
                         viewModel.toggleDiscoverability(true)
                     }
                 }
+                Lifecycle.Event.ON_PAUSE -> {
+                    viewModel.stopScanning()
+                }
                 else -> {}
             }
         }
