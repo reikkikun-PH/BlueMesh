@@ -217,10 +217,20 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
 
     fun saveSessionKey(uuid: String, sessionKey: String) {
         val db = writableDatabase
+        val cursor = db.rawQuery("SELECT name FROM Contacts WHERE uuid = ?", arrayOf(uuid))
+        val exists = cursor.count > 0
+        cursor.close()
+
         val values = ContentValues().apply {
             put("session_key", sessionKey)
         }
-        db.update("Contacts", values, "uuid = ?", arrayOf(uuid))
+        if (exists) {
+            db.update("Contacts", values, "uuid = ?", arrayOf(uuid))
+        } else {
+            values.put("uuid", uuid)
+            values.put("name", "Temp_Peer")
+            db.insert("Contacts", null, values)
+        }
     }
 
     fun getSessionKey(uuid: String): String? {
