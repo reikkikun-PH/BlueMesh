@@ -798,9 +798,12 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
     override fun setShareLocationEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("is_share_location_enabled", enabled).apply()
-        if (enabled) {
+        if (isDiscoverableEnabled()) {
             bluetoothHandler.stopAdvertising()
-            bluetoothHandler.startAdvertising(getDisplayName())
+            val name = getDisplayName()
+            if (name.isNotEmpty()) {
+                bluetoothHandler.startAdvertising(name)
+            }
         }
     }
 

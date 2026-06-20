@@ -1006,7 +1006,25 @@ class BluetoothHandler(private val context: Context) {
         connectionTimeoutJob?.cancel()
         currentWriteDeferred?.complete(false)
         currentWriteDeferred = null
-        val gatt = bluetoothGatt ?: return
+        
+        connectedClientDevice?.let { device ->
+            try {
+                bluetoothGattServer?.cancelConnection(device)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error cancelling client connection from server", e)
+            }
+        }
+        connectedClientDevice = null
+
+        val gatt = bluetoothGatt
+        if (gatt == null) {
+            _connectionStatus.value = ConnectionStatus.DISCONNECTED
+            _isReady.value = false
+            connectedServerDevice = null
+            messageCharacteristic = null
+            return
+        }
+
         if (isDisconnecting.get()) return
         isDisconnecting.set(true)
         _connectionStatus.value = ConnectionStatus.DISCONNECTED
