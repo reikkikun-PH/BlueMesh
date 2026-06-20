@@ -143,9 +143,7 @@ class BluetoothHandler(private val context: Context) {
     private val gattWriteMutex = Mutex()
 
     // Cache to assemble incoming chunked BLE packets
-    private val incomingChunks = java.util.Collections.synchronizedMap(
-        mutableMapOf<String, MutableMap<Int, ByteArray>>()
-    )
+    private val incomingChunks = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.ConcurrentHashMap<Int, ByteArray>>()
     private val lastChunkTimestamp = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     private fun handleIncomingValue(device: BluetoothDevice, value: ByteArray) {
@@ -185,24 +183,35 @@ class BluetoothHandler(private val context: Context) {
 
         val key = "${senderAddress}_${type}"
         lastChunkTimestamp[key] = System.currentTimeMillis()
-        val chunksMap = incomingChunks.getOrPut(key) { mutableMapOf() }
-        chunksMap[chunkIndex] = data
+        val chunksMap = incomingChunks.getOrPut(key) { java.util.concurrent.ConcurrentHashMap() }
+        
+        var isAssembled = false
+        var assembledData: ByteArray? = null
 
-        if (chunksMap.size == totalChunks) {
-            val allPresent = (0 until totalChunks).all { chunksMap.containsKey(it) }
-            if (allPresent) {
-                incomingChunks.remove(key)
-                lastChunkTimestamp.remove(key)
-                val totalSize = (0 until totalChunks).sumOf { chunksMap[it]!!.size }
-                val assembled = ByteArray(totalSize)
-                var offset = 0
-                for (i in 0 until totalChunks) {
-                    val chunkData = chunksMap[i]!!
-                    System.arraycopy(chunkData, 0, assembled, offset, chunkData.size)
-                    offset += chunkData.size
+        synchronized(chunksMap) {
+            chunksMap[chunkIndex] = data
+
+            if (chunksMap.size == totalChunks) {
+                val allPresent = (0 until totalChunks).all { chunksMap.containsKey(it) }
+                if (allPresent) {
+                    isAssembled = true
+                    incomingChunks.remove(key)
+                    lastChunkTimestamp.remove(key)
+                    val totalSize = (0 until totalChunks).sumOf { chunksMap[it]!!.size }
+                    val assembled = ByteArray(totalSize)
+                    var offset = 0
+                    for (i in 0 until totalChunks) {
+                        val chunkData = chunksMap[i]!!
+                        System.arraycopy(chunkData, 0, assembled, offset, chunkData.size)
+                        offset += chunkData.size
+                    }
+                    assembledData = assembled
                 }
-                return Pair(type, assembled)
             }
+        }
+
+        if (isAssembled && assembledData != null) {
+            return Pair(type, assembledData!!)
         }
         return null
     }
@@ -252,7 +261,9 @@ class BluetoothHandler(private val context: Context) {
             ?: return false
         val address = peer.address
         if (bluetoothGatt?.device?.address == address) return true
-        if (connectedClients.any { it.address == address }) return true
+        synchronized(connectedClients) {
+            if (connectedClients.any { it.address == address }) return true
+        }
         return false
     }
 
@@ -264,7 +275,9 @@ class BluetoothHandler(private val context: Context) {
         if (clientGatt != null && clientGatt.device.address == address) {
             return _isReady.value
         }
-        val isServerConnected = connectedClients.any { it.address == address }
+        val isServerConnected = synchronized(connectedClients) {
+            connectedClients.any { it.address == address }
+        }
         if (isServerConnected) {
             val cccd = cccdStates[address]
             return cccd != null && cccd.isNotEmpty() && (cccd[0].toInt() and 0x01 != 0)
@@ -1115,18 +1128,7 @@ class BluetoothHandler(private val context: Context) {
             return
         }
 
-        synchronized(connectedClients) {
-            val differentClients = connectedClients.filter { it.address != device.address }
-            for (clientDev in differentClients) {
-                Log.d(TAG, "Tearing down existing server connection to ${clientDev.address} before connecting to ${device.address}")
-                try {
-                    bluetoothGattServer?.cancelConnection(clientDev)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to cancel server connection to ${clientDev.address}", e)
-                }
-                handleServerDisconnect(clientDev)
-            }
-        }
+        // We no longer tear down unrelated server-role connections here. This preserves the multi-peer mesh connections.
 
         bluetoothGatt?.let {
             try {
