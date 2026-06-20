@@ -1097,10 +1097,10 @@ class BluetoothHandler(private val context: Context) {
         }
     }
 
-    private suspend fun sendChunksInternal(chunks: List<ByteArray>): Boolean {
+    private suspend fun sendChunksInternal(chunks: List<ByteArray>, targetDevice: BluetoothDevice? = null): Boolean {
         val charClient = messageCharacteristic
         val gattClient = bluetoothGatt
-        if (gattClient != null && charClient != null) {
+        if (gattClient != null && charClient != null && (targetDevice == null || targetDevice.address == gattClient.device.address)) {
             var success = true
             for (chunk in chunks) {
                 val deferred = CompletableDeferred<Boolean>()
@@ -1131,7 +1131,7 @@ class BluetoothHandler(private val context: Context) {
         }
 
         val server = bluetoothGattServer
-        val activeClient = connectedClientDevice
+        val activeClient = targetDevice ?: connectedClientDevice
         if (server != null && activeClient != null) {
             val characteristic = server.getService(SERVICE_UUID)?.getCharacteristic(MESSAGE_CHARACTERISTIC_UUID)
             if (characteristic != null) {
@@ -1164,7 +1164,7 @@ class BluetoothHandler(private val context: Context) {
         return sendMessageSuspend(bytes)
     }
 
-    suspend fun sendMessageSuspend(bytes: ByteArray): Boolean = gattWriteMutex.withLock {
+    suspend fun sendMessageSuspend(bytes: ByteArray, targetDevice: BluetoothDevice? = null): Boolean = gattWriteMutex.withLock {
         try {
             var payload: ByteArray
             try {
@@ -1206,7 +1206,7 @@ class BluetoothHandler(private val context: Context) {
                 }
             }
 
-            val success = sendChunksInternal(chunks)
+            val success = sendChunksInternal(chunks, targetDevice)
             if (success) {
                 val text = decodePayload(bytes)?.second ?: String(bytes, Charsets.UTF_8)
                 _messages.tryEmit(ChatMessage(text, isFromMe = true, timestamp = System.currentTimeMillis()))
@@ -1218,9 +1218,9 @@ class BluetoothHandler(private val context: Context) {
         }
     }
 
-    suspend fun sendMessage(bytes: ByteArray): Boolean = sendMessageSuspend(bytes)
+    suspend fun sendMessage(bytes: ByteArray, targetDevice: BluetoothDevice? = null): Boolean = sendMessageSuspend(bytes, targetDevice)
 
-    suspend fun sendAck(timestamp: Long): Boolean = gattWriteMutex.withLock {
+    suspend fun sendAck(timestamp: Long, targetDevice: BluetoothDevice? = null): Boolean = gattWriteMutex.withLock {
         try {
             val payload = ByteArray(8).apply {
                 ByteBuffer.wrap(this).putLong(timestamp)
@@ -1232,14 +1232,14 @@ class BluetoothHandler(private val context: Context) {
                 System.arraycopy(payload, 0, this, 3, payload.size)
             }
 
-            return@withLock sendChunksInternal(listOf(chunk))
+            return@withLock sendChunksInternal(listOf(chunk), targetDevice)
         } catch (e: Exception) {
             Log.e(TAG, "Exception in sendAck", e)
             false
         }
     }
 
-    suspend fun sendPublicKey(myUuidStr: String, publicKeyBytes: ByteArray): Boolean = gattWriteMutex.withLock {
+    suspend fun sendPublicKey(myUuidStr: String, publicKeyBytes: ByteArray, targetDevice: BluetoothDevice? = null): Boolean = gattWriteMutex.withLock {
         try {
             val uuid = try { UUID.fromString(myUuidStr) } catch(e: Exception) { return@withLock false }
             val payload = ByteArray(publicKeyBytes.size + 17).apply {
@@ -1261,7 +1261,7 @@ class BluetoothHandler(private val context: Context) {
                 }
             }
 
-            return@withLock sendChunksInternal(chunks)
+            return@withLock sendChunksInternal(chunks, targetDevice)
         } catch (e: Exception) {
             Log.e(TAG, "Exception in sendPublicKey", e)
             false

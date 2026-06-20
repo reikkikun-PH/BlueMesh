@@ -128,6 +128,9 @@ fun MainNavigation() {
                                 backStack.removeLastOrNull()
                                 backStack.add(Lock("setup"))
                             }
+                            "verify_reset_id" -> {
+                                backStack.removeLastOrNull()
+                            }
                         }
                     },
                     onBack = {
