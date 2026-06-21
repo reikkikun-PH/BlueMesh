@@ -114,10 +114,11 @@ class BluetoothHandler(private val context: Context) {
             if (BluetoothAdapter.ACTION_STATE_CHANGED == intent.action) {
                 val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
                 if (state == BluetoothAdapter.STATE_ON) {
-                    Log.d(TAG, "Bluetooth turned ON. Restarting scanning/advertising.")
+                    Log.d(TAG, "Bluetooth turned ON. Restarting GATT server, scanning, and advertising.")
                     scope.launch {
                         try {
                             delay(1000)
+                            startGattServer()
                             onBluetoothStateOn?.invoke()
                         } catch (e: Exception) {
                             Log.e(TAG, "Error invoking onBluetoothStateOn", e)
