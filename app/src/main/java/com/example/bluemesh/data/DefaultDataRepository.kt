@@ -64,6 +64,11 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     private val processedMessagesCache = java.util.Collections.synchronizedList(mutableListOf<ProcessedMessageEntry>())
     private val PROCESSED_CACHE_MAX_SIZE = 200
 
+    // Mesh re-broadcast dedup: keyed by (senderUuid, rawText) within a short window
+    private data class MeshTextEntry(val text: String, val receivedAt: Long)
+    private val recentMeshTexts = mutableMapOf<String, MutableList<MeshTextEntry>>()
+    private val MESH_DEDUP_WINDOW_MS = 3000L
+
     private fun encryptPayload(timestamp: Long, text: String, sessionKey: ByteArray, messageId: Int): ByteArray {
         val rawPayload = BluetoothHandler.encodePayload(timestamp, text)
         val ciphertext = CryptoUtils.encryptAESGCM(rawPayload, sessionKey)
@@ -86,6 +91,16 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 if (msg.isFromMe && msg.timestamp == timestamp && msg.status != "SENT") msg.copy(status = "SENT") else msg
             }
         }
+    }
+
+    private fun isRecentMeshTextDuplicate(senderUuid: String, text: String): Boolean {
+        val now = System.currentTimeMillis()
+        val entries = recentMeshTexts.getOrPut(senderUuid) { mutableListOf() }
+        entries.removeAll { now - it.receivedAt > MESH_DEDUP_WINDOW_MS }
+        if (entries.any { it.text == text }) return true
+        entries.add(MeshTextEntry(text, now))
+        if (entries.size > 10) entries.removeAt(0)
+        return false
     }
 
     private suspend fun isDuplicateMessage(senderUuid: String, timestamp: Long): Boolean = withContext(Dispatchers.IO) {
@@ -266,10 +281,6 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             pendingAcks.remove(request.timestamp)
                             if (sent) {
                                 markMessageSent(request.timestamp)
-                                if (!acked) {
-                                    shouldMeshAdvertise(request.text) // GATT sent but no ACK, broadcast via mesh
-                                    Log.w("DataRepository", "Message ${request.timestamp} sent but ACK not confirmed (peer may have received it)")
-                                }
                                 delay(150) // Inter-message gap: give peer time to process before next message
                             } else {
                                 shouldMeshAdvertise(request.text) // GATT failed, try mesh relay fallback
@@ -454,7 +465,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         val textBytes = message.text.toByteArray(Charsets.ISO_8859_1)
                         var msgTimestamp = message.timestamp
                         var finalMessageText = ""
-                        if (textBytes.size >= 6 && textBytes[0] == 1.toByte() && textBytes[1] == 2.toByte()) {
+                        if (message.senderHash != null) {
+                            // Mesh message: raw text only (no timestamp prefix, no encryption)
+                            finalMessageText = message.text
+                        } else if (textBytes.size >= 6 && textBytes[0] == 1.toByte() && textBytes[1] == 2.toByte()) {
                             // Encrypted payload
                             val ciphertext = textBytes.copyOfRange(6, textBytes.size)
                             val key = getSessionKeyForUuid(senderUuid)
@@ -490,6 +504,13 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                                   bluetoothHandler.getConnectedDeviceByAddress(connectedAddress)
                               } else {
                                   bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, senderUuid) }?.device
+                              }
+                              // Mesh re-broadcast dedup: catches relay echo duplicates by (sender, text)
+                              if (message.senderHash != null && isRecentMeshTextDuplicate(senderUuid, finalMessageText)) {
+                                  scope.launch {
+                                      bluetoothHandler.sendAck(msgTimestamp, peerDevice)
+                                  }
+                                  return@collect
                               }
                               if (isDuplicateMessage(senderUuid, msgTimestamp)) {
                                   scope.launch {
