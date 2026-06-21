@@ -513,10 +513,12 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                                     } catch (e: Exception) {
                                         Log.e("DataRepository", "Decryption failed for message from $senderUuid", e)
                                         finalMessageText = "[Decryption Failed]"
+                                        triggerKeyExchangeForPeer(senderUuid)
                                     }
                                 } else {
                                     Log.w("DataRepository", "Missing session key for encrypted message from $senderUuid")
                                     finalMessageText = "[Encrypted Message]"
+                                    triggerKeyExchangeForPeer(senderUuid)
                                 }
                             } else {
                                 // Plaintext
@@ -747,6 +749,9 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         _chatMessages.update { current -> current + ChatMessage(text, true, timestamp, "PENDING") }
 
         val sessionKey = getSessionKeyForUuid(activeChatUuid)
+        if (isPasscodeEnabled() && sessionKey == null) {
+            triggerKeyExchangeForPeer(activeChatUuid)
+        }
         val payload = if (sessionKey != null) {
             encryptPayload(timestamp, text, sessionKey, messageId)
         } else {
@@ -927,7 +932,8 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         for (msg in pending) {
             val sessionKey = getSessionKeyForUuid(canonicalUuid)
             if (isPasscodeEnabled() && sessionKey == null) {
-                // Wait for E2EE key exchange to complete before sending
+                // Wait for E2EE key exchange to complete before sending, trigger it proactively
+                triggerKeyExchangeForPeer(canonicalUuid)
                 continue
             }
             val msgId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
@@ -1157,6 +1163,24 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             if (meshId == hash) return true
         }
         return false
+    }
+
+    private fun triggerKeyExchangeForPeer(peerUuid: String) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val device = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid) }?.device
+                    ?: bluetoothHandler.getDeviceByUuid(peerUuid)
+                if (device != null) {
+                    if (myKeyPair == null) myKeyPair = CryptoUtils.generateECKeyPair()
+                    myKeyPair?.let {
+                        Log.d("DataRepository", "Triggering proactive key exchange for $peerUuid")
+                        bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded, device)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("DataRepository", "Failed proactive key exchange", e)
+            }
+        }
     }
 }
 

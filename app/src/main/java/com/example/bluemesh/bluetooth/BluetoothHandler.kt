@@ -222,9 +222,8 @@ class BluetoothHandler(private val context: Context) {
         var assembledData: ByteArray? = null
 
         synchronized(chunksMap) {
-            // If chunk 0 arrives but the map contains leftovers from a previous incomplete
-            // message (no chunk 0 present), clear to prevent cross-message chunk collision
-            if (chunkIndex == 0 && chunksMap.isNotEmpty() && !chunksMap.containsKey(0)) {
+            // Clear leftovers from any previous incomplete message when a new chunked transmission begins
+            if (chunkIndex == 0) {
                 chunksMap.clear()
             }
             chunksMap[chunkIndex] = data
