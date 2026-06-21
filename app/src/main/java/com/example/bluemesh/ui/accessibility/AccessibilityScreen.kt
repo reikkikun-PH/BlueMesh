@@ -17,6 +17,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.bluemesh.data.DefaultDataRepository
+import com.example.bluemesh.theme.LocalBlueMeshColors
 import kotlin.math.roundToInt
 
 @Composable
@@ -29,11 +30,12 @@ fun AccessibilityScreen(
     var boldEnabled by remember { mutableStateOf(repository.isBoldTextEnabled()) }
     var fontSizeLevel by remember { mutableStateOf(repository.getFontSizeLevel().toFloat()) }
     val fontSizeDescriptions = listOf("XS", "S", "M", "L", "XL", "XXL", "XXXL")
+    val colors = LocalBlueMeshColors.current
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0E131E))
+            .background(colors.background)
             .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime))
             .padding(16.dp)
     ) {
@@ -46,12 +48,12 @@ fun AccessibilityScreen(
             ) {
                 IconButton(
                     onClick = onBackClick,
-                    colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White)
+                    colors = IconButtonDefaults.iconButtonColors(contentColor = colors.onSurface)
                 ) {
                     Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back")
                 }
                 Spacer(modifier = Modifier.width(16.dp))
-                Text("Accessibility", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Text("Accessibility", color = colors.onSurface, fontSize = 24.sp, fontWeight = FontWeight.Bold)
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -59,7 +61,7 @@ fun AccessibilityScreen(
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1D263B))
+                colors = CardDefaults.cardColors(containerColor = colors.surface)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
@@ -74,54 +76,54 @@ fun AccessibilityScreen(
                             Box(
                                 modifier = Modifier
                                     .size(40.dp)
-                                    .background(Color(0xFF8B5CF6).copy(alpha = 0.2f), RoundedCornerShape(8.dp)),
+                                    .background(colors.secondary.copy(alpha = 0.2f), RoundedCornerShape(8.dp)),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.FormatBold,
                                     contentDescription = "Bold Text",
-                                    tint = Color(0xFF8B5CF6)
+                                    tint = colors.secondary
                                 )
                             }
                             Spacer(modifier = Modifier.width(16.dp))
                             Column {
-                                Text("Bold Text", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Use bold font weight for all text", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                                Text("Bold Text", color = colors.onSurface, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Use bold font weight for all text", color = colors.textSecondary, fontSize = 12.sp)
                             }
                         }
                         Switch(
                             checked = boldEnabled,
                             onCheckedChange = { repository.setBoldTextEnabled(it); boldEnabled = it },
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF8B5CF6),
-                                uncheckedThumbColor = Color(0xFF94A3B8), uncheckedTrackColor = Color(0xFF334155)
+                                checkedThumbColor = Color.White, checkedTrackColor = colors.secondary,
+                                uncheckedThumbColor = colors.textSecondary, uncheckedTrackColor = colors.divider
                             )
                         )
                     }
 
                     Spacer(modifier = Modifier.height(24.dp))
-                    HorizontalDivider(color = Color(0xFF334155))
+                    HorizontalDivider(color = colors.divider)
                     Spacer(modifier = Modifier.height(24.dp))
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
                                 .size(40.dp)
-                                .background(Color(0xFF3B82F6).copy(alpha = 0.2f), RoundedCornerShape(8.dp)),
+                                .background(colors.primary.copy(alpha = 0.2f), RoundedCornerShape(8.dp)),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.TextFields,
                                 contentDescription = "Font Size",
-                                tint = Color(0xFF3B82F6)
+                                tint = colors.primary
                             )
                         }
                         Spacer(modifier = Modifier.width(16.dp))
                         Column {
-                            Text("Font Size", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Font Size", color = colors.onSurface, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                             Text(
                                 text = fontSizeDescriptions.getOrElse(fontSizeLevel.roundToInt() - 1) { "M" },
-                                color = Color(0xFF94A3B8),
+                                color = colors.textSecondary,
                                 fontSize = 12.sp
                             )
                         }
@@ -140,9 +142,9 @@ fun AccessibilityScreen(
                         valueRange = 1f..7f,
                         steps = 5,
                         colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFF3B82F6),
-                            activeTrackColor = Color(0xFF3B82F6),
-                            inactiveTrackColor = Color(0xFF334155)
+                            thumbColor = colors.primary,
+                            activeTrackColor = colors.primary,
+                            inactiveTrackColor = colors.divider
                         )
                     )
 
@@ -153,7 +155,7 @@ fun AccessibilityScreen(
                         fontSizeDescriptions.forEach { label ->
                             Text(
                                 text = label,
-                                color = Color(0xFF64748B),
+                                color = colors.textTertiary,
                                 fontSize = 10.sp,
                                 fontWeight = if (fontSizeDescriptions.indexOf(label) + 1 == fontSizeLevel.roundToInt()) FontWeight.Bold else FontWeight.Normal
                             )
@@ -164,7 +166,7 @@ fun AccessibilityScreen(
 
                     Text(
                         text = "Preview: The quick brown fox jumps over the lazy dog",
-                        color = Color(0xFF94A3B8),
+                        color = colors.textSecondary,
                         fontSize = (12 + fontSizeLevel.roundToInt() * 2).sp,
                         fontWeight = if (boldEnabled) FontWeight.Bold else FontWeight.Normal
                     )

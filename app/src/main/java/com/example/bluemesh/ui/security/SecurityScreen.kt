@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Refresh
 import com.example.bluemesh.data.DefaultDataRepository
+import com.example.bluemesh.theme.LocalBlueMeshColors
 import com.example.bluemesh.ui.LocalAccessibility
 
 @Composable
@@ -37,11 +38,12 @@ fun SecurityScreen(
     val repository = remember { DefaultDataRepository.getInstance(context.applicationContext) }
     var isShareLocationEnabled by remember { mutableStateOf(repository.isShareLocationEnabled()) }
     var showResetDialog by remember { mutableStateOf(false) }
+    val colors = LocalBlueMeshColors.current
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0E131E))
+            .background(colors.background)
             .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime))
             .padding(16.dp)
     ) {
@@ -59,7 +61,7 @@ fun SecurityScreen(
                 IconButton(
                     onClick = onBackClick,
                     colors = IconButtonDefaults.iconButtonColors(
-                        contentColor = Color.White
+                        contentColor = colors.onSurface
                     )
                 ) {
                     Icon(
@@ -70,7 +72,7 @@ fun SecurityScreen(
                 Spacer(modifier = Modifier.width(16.dp))
                 Text(
                     text = "Security Settings",
-                    color = Color.White,
+                    color = colors.onSurface,
                     fontSize = accessibility.headerFontSize,
                     fontWeight = accessibility.headerFontWeight
                 )
@@ -83,7 +85,7 @@ fun SecurityScreen(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = Color(0xFF1D263B)
+                    containerColor = colors.surface
                 )
             ) {
                 Column(
@@ -107,7 +109,7 @@ fun SecurityScreen(
                                 modifier = Modifier
                                     .size(40.dp)
                                     .background(
-                                        color = Color(0xFF8B5CF6).copy(alpha = 0.2f),
+                                        color = colors.secondary.copy(alpha = 0.2f),
                                         shape = RoundedCornerShape(8.dp)
                                     ),
                                 contentAlignment = Alignment.Center
@@ -115,20 +117,20 @@ fun SecurityScreen(
                                 Icon(
                                     imageVector = Icons.Default.Security,
                                     contentDescription = "Change Passcode",
-                                    tint = Color(0xFF8B5CF6)
+                                    tint = colors.secondary
                                 )
                             }
                             Spacer(modifier = Modifier.width(16.dp))
                             Column {
                                 Text(
                                     text = "Change Passcode",
-                                    color = Color.White,
+                                    color = colors.onSurface,
                                     fontSize = accessibility.bodyFontSize,
                                     fontWeight = accessibility.bodyFontWeight
                                 )
                                 Text(
                                     text = "Update your 4-digit PIN",
-                                    color = Color(0xFF94A3B8),
+                                    color = colors.textSecondary,
                                     fontSize = accessibility.captionFontSize
                                 )
                             }
@@ -137,13 +139,13 @@ fun SecurityScreen(
                         Icon(
                             imageVector = Icons.Default.ChevronRight,
                             contentDescription = "Navigate",
-                            tint = Color(0xFF64748B)
+                            tint = colors.textTertiary
                         )
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
                     HorizontalDivider(
-                        color = Color(0xFF334155)
+                        color = colors.divider
                     )
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -161,7 +163,7 @@ fun SecurityScreen(
                                 modifier = Modifier
                                     .size(40.dp)
                                     .background(
-                                        color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                        color = colors.success.copy(alpha = 0.2f),
                                         shape = RoundedCornerShape(8.dp)
                                     ),
                                 contentAlignment = Alignment.Center
@@ -169,20 +171,20 @@ fun SecurityScreen(
                                 Icon(
                                     imageVector = Icons.Default.GpsFixed,
                                     contentDescription = "Share Location",
-                                    tint = Color(0xFF10B981)
+                                    tint = colors.success
                                 )
                             }
                             Spacer(modifier = Modifier.width(16.dp))
                             Column {
                                 Text(
                                     text = "Share Device Location",
-                                    color = Color.White,
+                                    color = colors.onSurface,
                                     fontSize = accessibility.bodyFontSize,
                                     fontWeight = accessibility.bodyFontWeight
                                 )
                                 Text(
                                     text = "Allow to share proximity location",
-                                    color = Color(0xFF94A3B8),
+                                    color = colors.textSecondary,
                                     fontSize = accessibility.captionFontSize
                                 )
                             }
@@ -196,16 +198,16 @@ fun SecurityScreen(
                             },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color.White,
-                                checkedTrackColor = Color(0xFF10B981),
-                                uncheckedThumbColor = Color(0xFF94A3B8),
-                                uncheckedTrackColor = Color(0xFF334155)
+                                checkedTrackColor = colors.success,
+                                uncheckedThumbColor = colors.textSecondary,
+                                uncheckedTrackColor = colors.divider
                             )
                         )
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
                     HorizontalDivider(
-                        color = Color(0xFF334155)
+                        color = colors.divider
                     )
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -228,7 +230,7 @@ fun SecurityScreen(
                                 modifier = Modifier
                                     .size(40.dp)
                                     .background(
-                                        color = Color(0xFFEF4444).copy(alpha = 0.2f),
+                                        color = colors.error.copy(alpha = 0.2f),
                                         shape = RoundedCornerShape(8.dp)
                                     ),
                                 contentAlignment = Alignment.Center
@@ -236,20 +238,20 @@ fun SecurityScreen(
                                 Icon(
                                     imageVector = Icons.Default.Refresh,
                                     contentDescription = "Reset ID",
-                                    tint = Color(0xFFEF4444)
+                                    tint = colors.error
                                 )
                             }
                             Spacer(modifier = Modifier.width(16.dp))
                             Column {
                                 Text(
                                     text = "Reset User ID",
-                                    color = Color.White,
+                                    color = colors.onSurface,
                                     fontSize = accessibility.bodyFontSize,
                                     fontWeight = accessibility.bodyFontWeight
                                 )
                                 Text(
                                     text = "Generate a new static identifier",
-                                    color = Color(0xFF94A3B8),
+                                    color = colors.textSecondary,
                                     fontSize = accessibility.captionFontSize
                                 )
                             }
@@ -258,7 +260,7 @@ fun SecurityScreen(
                         Icon(
                             imageVector = Icons.Default.ChevronRight,
                             contentDescription = "Navigate",
-                            tint = Color(0xFF64748B)
+                            tint = colors.textTertiary
                         )
                     }
                 }
@@ -272,18 +274,18 @@ fun SecurityScreen(
                 onDismissRequest = {
                     showResetDialog = false
                 },
-                containerColor = Color(0xFF1D263B),
+                containerColor = colors.surface,
                 title = {
                     Text(
                         text = "Reset User ID",
-                        color = Color.White,
+                        color = colors.onSurface,
                         fontWeight = FontWeight.Bold
                     )
                 },
                 text = {
                     Text(
                         text = "Warning: Resetting your User ID will remove your connection to people who added you to their contacts. They will not be able to message you until they add your new ID.",
-                        color = Color(0xFFEF4444),
+                        color = colors.error,
                         fontSize = accessibility.bodyFontSize
                     )
                 },
@@ -294,7 +296,7 @@ fun SecurityScreen(
                             onNavigateToLock("verify_reset_id")
                         }
                     ) {
-                        Text("Confirm Reset", color = Color(0xFFEF4444))
+                        Text("Confirm Reset", color = colors.error)
                     }
                 },
                 dismissButton = {
@@ -303,7 +305,7 @@ fun SecurityScreen(
                             showResetDialog = false
                         }
                     ) {
-                        Text("Cancel", color = Color.White)
+                        Text("Cancel", color = colors.onSurface)
                     }
                 }
             )

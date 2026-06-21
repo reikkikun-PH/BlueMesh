@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluemesh.data.DefaultDataRepository
 import com.example.bluemesh.data.models.BluetoothPeer
+import com.example.bluemesh.theme.LocalBlueMeshColors
 import com.example.bluemesh.ui.LocalAccessibility
 
 @Composable
@@ -43,6 +44,7 @@ fun ContactsScreen(
 
     val discoveredPeers by repository.discoveredPeers.collectAsStateWithLifecycle(initialValue = emptyList())
     var contactsList by remember { mutableStateOf(repository.getContacts()) }
+    val colors = LocalBlueMeshColors.current
 
     val refreshContacts = {
         contactsList = repository.getContacts()
@@ -51,7 +53,7 @@ fun ContactsScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0E131E))
+            .background(colors.background)
             .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime))
     ) {
         if (!isPasscodeEnabled) {
@@ -67,14 +69,14 @@ fun ContactsScreen(
                     modifier = Modifier
                         .size(80.dp)
                         .clip(RoundedCornerShape(20.dp))
-                        .background(Color(0xFFEF4444).copy(alpha = 0.2f)),
+                        .background(colors.error.copy(alpha = 0.2f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Security,
                         contentDescription = "Security required",
                         modifier = Modifier.size(40.dp),
-                        tint = Color(0xFFEF4444)
+                        tint = colors.error
                     )
                 }
 
@@ -82,7 +84,7 @@ fun ContactsScreen(
 
                 Text(
                     text = "Passcode Lock Required",
-                    color = Color.White,
+                    color = colors.onSurface,
                     fontSize = accessibility.headerFontSize,
                     fontWeight = accessibility.headerFontWeight,
                     textAlign = TextAlign.Center
@@ -93,7 +95,7 @@ fun ContactsScreen(
                 Text(
                     text = "To protect your contact lists and offline queue history, you must enable a Passcode lock in Security Settings.",
                     modifier = Modifier.padding(horizontal = 16.dp),
-                    color = Color(0xFF94A3B8),
+                    color = colors.textSecondary,
                     fontSize = accessibility.bodyFontSize,
                     textAlign = TextAlign.Center,
                     lineHeight = accessibility.bodyFontSize * 1.5f
@@ -108,8 +110,8 @@ fun ContactsScreen(
                         .height(50.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF3B82F6),
-                        contentColor = Color.White
+                        containerColor = colors.primary,
+                        contentColor = colors.onSurface
                     )
                 ) {
                     Text(
@@ -123,7 +125,7 @@ fun ContactsScreen(
                 TextButton(onClick = onBackClick) {
                     Text(
                         text = "Back",
-                        color = Color(0xFF64748B)
+                        color = colors.textTertiary
                     )
                 }
             }
@@ -143,7 +145,7 @@ fun ContactsScreen(
                     IconButton(
                         onClick = onBackClick,
                         colors = IconButtonDefaults.iconButtonColors(
-                            contentColor = Color.White
+                            contentColor = colors.onSurface
                         )
                     ) {
                         Icon(
@@ -154,7 +156,7 @@ fun ContactsScreen(
                     Spacer(modifier = Modifier.width(16.dp))
                     Text(
                         text = "Contacts",
-                        color = Color.White,
+                        color = colors.onSurface,
                         fontSize = accessibility.headerFontSize,
                         fontWeight = accessibility.headerFontWeight
                     )
@@ -171,7 +173,7 @@ fun ContactsScreen(
                     ) {
                         Text(
                             text = "No saved contacts yet.\nSave nearby peers as contacts from the main screen list.",
-                            color = Color(0xFF64748B),
+                            color = colors.textTertiary,
                             fontSize = accessibility.bodyFontSize,
                             textAlign = TextAlign.Center,
                             lineHeight = accessibility.bodyFontSize * 1.5f
@@ -190,7 +192,7 @@ fun ContactsScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(16.dp),
                                 colors = CardDefaults.cardColors(
-                                    containerColor = Color(0xFF1D263B)
+                                    containerColor = colors.surface
                                 )
                             ) {
                                 Row(
@@ -205,7 +207,7 @@ fun ContactsScreen(
                                             .size(10.dp)
                                             .clip(CircleShape)
                                             .background(
-                                                if (isOnline) Color(0xFF10B981) else Color(0xFF64748B)
+                                                if (isOnline) colors.success else colors.textTertiary
                                             )
                                     )
 
@@ -217,7 +219,7 @@ fun ContactsScreen(
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Text(
                                                 text = contact.name,
-                                                color = Color.White,
+                                                color = colors.onSurface,
                                                 fontSize = accessibility.bodyFontSize,
                                                 fontWeight = accessibility.bodyFontWeight,
                                                 maxLines = 1,
@@ -229,14 +231,14 @@ fun ContactsScreen(
                                                 Icon(
                                                     imageVector = Icons.Default.CheckCircle,
                                                     contentDescription = "Official Profile",
-                                                    tint = Color(0xFF3B82F6),
+                                                    tint = colors.primary,
                                                     modifier = Modifier.size(16.dp)
                                                 )
                                             }
                                         }
                                         Text(
                                             text = if (isOnline) "Active / In Range" else "Offline / Out of Range",
-                                            color = if (isOnline) Color(0xFF10B981) else Color(0xFF64748B),
+                                            color = if (isOnline) colors.success else colors.textTertiary,
                                             fontSize = accessibility.captionFontSize
                                         )
                                     }
@@ -250,7 +252,7 @@ fun ContactsScreen(
                                             Icon(
                                                 imageVector = Icons.Default.Chat,
                                                 contentDescription = "Chat",
-                                                tint = Color(0xFF3B82F6)
+                                                tint = colors.primary
                                             )
                                         }
                                         IconButton(
@@ -262,7 +264,7 @@ fun ContactsScreen(
                                             Icon(
                                                 imageVector = Icons.Default.Delete,
                                                 contentDescription = "Delete Contact",
-                                                tint = Color(0xFFEF4444)
+                                                tint = colors.error
                                             )
                                         }
                                     }

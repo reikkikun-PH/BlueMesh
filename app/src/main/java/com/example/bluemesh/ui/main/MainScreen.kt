@@ -35,6 +35,9 @@ import com.example.bluemesh.AccessibilitySettings
 import com.example.bluemesh.SecuritySettings
 import com.example.bluemesh.data.DefaultDataRepository
 import com.example.bluemesh.data.models.BluetoothPeer
+import com.example.bluemesh.theme.LocalBlueMeshColors
+import com.example.bluemesh.theme.LocalIsDarkMode
+import com.example.bluemesh.theme.LocalOnThemeToggle
 import com.example.bluemesh.ui.AccessibilityState
 import com.example.bluemesh.ui.LocalAccessibility
 import kotlinx.coroutines.launch
@@ -58,6 +61,9 @@ fun MainScreen(
     val isAdvertising by viewModel.isAdvertising.collectAsStateWithLifecycle()
     val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
     var isDiscoverable by remember { mutableStateOf(repository.isDiscoverableEnabled()) }
+    val colors = LocalBlueMeshColors.current
+    val isDarkMode = LocalIsDarkMode.current
+    val onThemeToggle = LocalOnThemeToggle.current
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -90,17 +96,17 @@ fun MainScreen(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet(
-                drawerContainerColor = Color(0xFF1D263B)
+                drawerContainerColor = colors.surface
             ) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
                     text = "BlueMesh Settings",
-                    color = Color.White,
+                    color = colors.onSurface,
                     fontSize = accessibility.headerFontSize,
                     fontWeight = accessibility.headerFontWeight,
                     modifier = Modifier.padding(16.dp)
                 )
-                HorizontalDivider(color = Color(0xFF334155))
+                HorizontalDivider(color = colors.divider)
                 Spacer(modifier = Modifier.height(8.dp))
                 
                 NavigationDrawerItem(
@@ -108,10 +114,10 @@ fun MainScreen(
                         Icon(
                             imageVector = Icons.Default.Contacts,
                             contentDescription = "Contacts",
-                            tint = Color(0xFF3B82F6)
+                            tint = colors.primary
                         )
                     },
-                    label = { Text("Contacts", color = Color.White) },
+                    label = { Text("Contacts", color = colors.onSurface) },
                     selected = false,
                     onClick = {
                         scope.launch { drawerState.close() }
@@ -131,7 +137,7 @@ fun MainScreen(
                             tint = Color(0xFF0284C7)
                         )
                     },
-                    label = { Text("Security", color = Color.White) },
+                    label = { Text("Security", color = colors.onSurface) },
                     selected = false,
                     onClick = {
                         scope.launch { drawerState.close() }
@@ -151,7 +157,7 @@ fun MainScreen(
                             tint = Color(0xFF8B5CF6)
                         )
                     },
-                    label = { Text("Accessibility", color = Color.White) },
+                    label = { Text("Accessibility", color = colors.onSurface) },
                     selected = false,
                     onClick = {
                         scope.launch { drawerState.close() }
@@ -171,7 +177,7 @@ fun MainScreen(
                             tint = Color(0xFF8B5CF6)
                         )
                     },
-                    label = { Text("About", color = Color.White) },
+                    label = { Text("About", color = colors.onSurface) },
                     selected = false,
                     onClick = {
                         scope.launch { drawerState.close() }
@@ -187,6 +193,42 @@ fun MainScreen(
                     ),
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
                 )
+
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider(color = colors.divider)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Dark Theme",
+                            color = colors.onSurface,
+                            fontSize = accessibility.bodyFontSize,
+                            fontWeight = accessibility.bodyFontWeight
+                        )
+                        Text(
+                            text = if (isDarkMode) "Dark mode active" else "Light mode active",
+                            color = colors.textSecondary,
+                            fontSize = accessibility.captionFontSize
+                        )
+                    }
+                    Switch(
+                        checked = isDarkMode,
+                        onCheckedChange = { onThemeToggle?.invoke(it) },
+                        colors = SwitchDefaults.colors(
+checkedThumbColor = Color.White,
+                    checkedTrackColor = colors.primary,
+                    uncheckedThumbColor = colors.switchUncheckedThumb,
+                    uncheckedTrackColor = colors.switchUncheckedTrack
+                        )
+                    )
+                }
 
                 Spacer(modifier = Modifier.weight(1f))
 
@@ -205,9 +247,10 @@ fun MainScreen(
                 }
                 Text(
                     text = "BlueMesh Version $versionName",
-                    color = Color(0xFF64748B),
+                    color = colors.textTertiary,
                     fontSize = accessibility.captionFontSize,
-                    modifier = Modifier.padding(16.dp)
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(16.dp)
                 )
             }
         }
@@ -215,7 +258,7 @@ fun MainScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color(0xFF0E131E))
+                .background(colors.background)
                 .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime))
                 .padding(16.dp)
         ) {
@@ -233,7 +276,7 @@ fun MainScreen(
                         onClick = {
                             scope.launch { drawerState.open() }
                         },
-                        colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White)
+                        colors = IconButtonDefaults.iconButtonColors(contentColor = colors.onSurface)
                     ) {
                         Icon(imageVector = Icons.Default.Menu, contentDescription = "Menu")
                     }
@@ -244,14 +287,14 @@ fun MainScreen(
                         fontWeight = accessibility.headerFontWeight,
                         style = TextStyle(
                             brush = Brush.linearGradient(
-                                colors = listOf(Color(0xFF8B5CF6), Color(0xFF3B82F6))
+                                colors = listOf(Color(0xFF8B5CF6), colors.primary)
                             )
                         )
                     )
 
                     IconButton(
                         onClick = { viewModel.startScanning(clearList = true) },
-                        colors = IconButtonDefaults.iconButtonColors(contentColor = Color(0xFF3B82F6))
+                        colors = IconButtonDefaults.iconButtonColors(contentColor = colors.primary)
                     ) {
                         Icon(imageVector = Icons.Default.Refresh, contentDescription = "Rescan")
                     }
@@ -262,7 +305,7 @@ fun MainScreen(
                 // Profile Card
                 Card(
                     shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1D263B)),
+                    colors = CardDefaults.cardColors(containerColor = colors.surface),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -275,13 +318,13 @@ fun MainScreen(
                         Column {
                             Text(
                                 text = "Chat Profile",
-                                color = Color(0xFF94A3B8),
+                                color = colors.textSecondary,
                                 fontSize = accessibility.captionFontSize,
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
                                 text = viewModel.displayName,
-                                color = Color.White,
+                                color = colors.onSurface,
                                 fontSize = accessibility.bodyFontSize,
                                 fontWeight = accessibility.bodyFontWeight
                             )
@@ -289,7 +332,7 @@ fun MainScreen(
 
                         IconButton(
                             onClick = onEditProfileClick,
-                            colors = IconButtonDefaults.iconButtonColors(contentColor = Color(0xFF8B5CF6))
+                            colors = IconButtonDefaults.iconButtonColors(contentColor = colors.secondary)
                         ) {
                             Icon(imageVector = Icons.Default.Edit, contentDescription = "Edit Profile Name")
                         }
@@ -301,7 +344,7 @@ fun MainScreen(
                 // Discoverable Switch Card
                 Card(
                     shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1D263B)),
+                    colors = CardDefaults.cardColors(containerColor = colors.surface),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -314,13 +357,13 @@ fun MainScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "Make Discoverable",
-                                color = Color.White,
+                                color = colors.onSurface,
                                 fontSize = accessibility.bodyFontSize,
                                 fontWeight = accessibility.bodyFontWeight
                             )
                             Text(
                                 text = if (isDiscoverable) "Broadcasting display name offline" else "Invisible to nearby peers",
-                                color = Color(0xFF94A3B8),
+                                color = colors.textSecondary,
                                 fontSize = accessibility.captionFontSize
                             )
                         }
@@ -333,9 +376,9 @@ fun MainScreen(
                             },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color.White,
-                                checkedTrackColor = Color(0xFF3B82F6),
-                                uncheckedThumbColor = Color(0xFF94A3B8),
-                                uncheckedTrackColor = Color(0xFF334155)
+                                checkedTrackColor = colors.primary,
+                                uncheckedThumbColor = colors.textSecondary,
+                                uncheckedTrackColor = colors.divider
                             )
                         )
                     }
@@ -350,7 +393,7 @@ fun MainScreen(
                 ) {
                     Text(
                         text = "Nearby Peers",
-                        color = Color.White,
+                        color = colors.onSurface,
                         fontSize = accessibility.bodyFontSize * 1.1f,
                         fontWeight = accessibility.headerFontWeight,
                         modifier = Modifier.weight(1f)
@@ -358,7 +401,7 @@ fun MainScreen(
 
                     if (isScanning) {
                         CircularProgressIndicator(
-                            color = Color(0xFF3B82F6),
+                            color = colors.primary,
                             strokeWidth = 2.dp,
                             modifier = Modifier.size(16.dp)
                         )
@@ -377,7 +420,7 @@ fun MainScreen(
                     ) {
                         Text(
                             text = "Searching for nearby BlueMesh users...\nEnsure Bluetooth is active on both devices.",
-                            color = Color(0xFF64748B),
+                            color = colors.textTertiary,
                             fontSize = accessibility.bodyFontSize,
                             textAlign = TextAlign.Center,
                             lineHeight = accessibility.bodyFontSize * 1.5f
@@ -421,9 +464,10 @@ fun PeerItem(
     onSaveClick: () -> Unit,
     onClick: () -> Unit
 ) {
+    val colors = LocalBlueMeshColors.current
     Card(
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1D263B)),
+        colors = CardDefaults.cardColors(containerColor = colors.surface),
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
@@ -438,8 +482,8 @@ fun PeerItem(
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = peer.name,
-                        color = Color.White,
+                        text = peer.name.ifEmpty { "Unknown User" },
+                        color = colors.onSurface,
                         fontSize = accessibility.bodyFontSize,
                         fontWeight = accessibility.bodyFontWeight,
                         maxLines = 1,
@@ -451,14 +495,14 @@ fun PeerItem(
                         Icon(
                             imageVector = Icons.Default.CheckCircle,
                             contentDescription = "Official Profile",
-                            tint = Color(0xFF3B82F6),
+                            tint = colors.primary,
                             modifier = Modifier.size(16.dp)
                         )
                     }
                 }
                 Text(
                     text = peer.uuid.ifEmpty { peer.address },
-                    color = Color(0xFF64748B),
+                    color = colors.textTertiary,
                     fontSize = accessibility.captionFontSize
                 )
                 if (peer.rssi != -100 && peer.allowTracking) {
@@ -466,7 +510,7 @@ fun PeerItem(
                     val distFormatted = if (dist < 1.0) "Within 1m" else "Est. " + ((dist * 10).toInt() / 10.0) + "m"
                     Text(
                         text = "$distFormatted (Signal: ${peer.rssi} dBm)",
-                        color = Color(0xFF3B82F6),
+                        color = colors.primary,
                         fontSize = accessibility.captionFontSize,
                         fontWeight = accessibility.bodyFontWeight
                     )
@@ -477,7 +521,7 @@ fun PeerItem(
                 if (!isContact) {
                     IconButton(
                         onClick = onSaveClick,
-                        colors = IconButtonDefaults.iconButtonColors(contentColor = Color(0xFF10B981))
+                        colors = IconButtonDefaults.iconButtonColors(contentColor = colors.success)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Add,
@@ -492,7 +536,7 @@ fun PeerItem(
                 Icon(
                     imageVector = Icons.Default.Bluetooth,
                     contentDescription = "Connect",
-                    tint = Color(0xFF3B82F6),
+                    tint = colors.primary,
                     modifier = Modifier.size(24.dp)
                 )
             }

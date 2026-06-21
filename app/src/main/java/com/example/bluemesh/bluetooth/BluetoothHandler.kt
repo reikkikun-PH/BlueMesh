@@ -48,6 +48,8 @@ class BluetoothHandler(private val context: Context) {
         private const val MESH_SERVICE_UUID_STR = "12345678-1234-5678-1234-567890abcdef"
         private const val MESH_COMPANY_ID = 0xFFFF
         private const val PEER_MANUFACTURER_ID = 0xFFFF
+        private val SERVICE_UUID_PARCEL = ParcelUuid(SERVICE_UUID)
+        private val MESH_SERVICE_UUID_PARCEL = ParcelUuid(UUID.fromString(MESH_SERVICE_UUID_STR))
         private const val CACHE_MAX_SIZE = 100
         private const val MAX_CLIENT_CONNECTIONS = 3
         private const val MAX_CONNECTIONS_OVERALL = 8
@@ -386,8 +388,7 @@ class BluetoothHandler(private val context: Context) {
             val scanRecord = result.scanRecord ?: return
             
             val serviceUuids = scanRecord.serviceUuids
-            val meshUuid = ParcelUuid(UUID.fromString(MESH_SERVICE_UUID_STR))
-            if (serviceUuids != null && serviceUuids.contains(meshUuid)) {
+            if (serviceUuids != null && serviceUuids.contains(MESH_SERVICE_UUID_PARCEL)) {
                 val manufacturerData = scanRecord.getManufacturerSpecificData(MESH_COMPANY_ID)
                 if (manufacturerData != null && manufacturerData.size >= 12) {
                     val buffer = ByteBuffer.wrap(manufacturerData).order(ByteOrder.BIG_ENDIAN)
@@ -403,7 +404,22 @@ class BluetoothHandler(private val context: Context) {
                 return
             }
             
-            val manufacturerData = scanRecord.getManufacturerSpecificData(PEER_MANUFACTURER_ID) ?: return
+            val manufacturerData = scanRecord.getManufacturerSpecificData(PEER_MANUFACTURER_ID)
+            if (manufacturerData == null || manufacturerData.size < 8) {
+                if (serviceUuids != null && serviceUuids.contains(SERVICE_UUID_PARCEL)) {
+                    _discoveredPeers.update { current ->
+                        val index = current.indexOfFirst { it.address == device.address }
+                        if (index >= 0) {
+                            current.mapIndexed { i, peer ->
+                                if (i == index) peer.copy(device = device, lastSeen = System.currentTimeMillis()) else peer
+                            }
+                        } else {
+                            current + BluetoothPeer(address = device.address, name = "", device = device, lastSeen = System.currentTimeMillis(), uuid = "")
+                        }
+                    }
+                }
+                return
+            }
             if (manufacturerData.size >= 8) {
                 val peerUuid = manufacturerData.copyOfRange(0, 8).toHexString()
                 val passcodeByte = if (manufacturerData.size >= 9) manufacturerData[8].toInt() else 0
@@ -1585,7 +1601,7 @@ class BluetoothHandler(private val context: Context) {
 
             val success = sendChunksInternal(chunks, targetDevice)
             if (success) {
-                delay(80) // Settling delay: let BLE stack process before releasing mutex
+                delay(30) // Settling delay: let BLE stack process before releasing mutex
                 val text = decodePayload(bytes)?.second ?: String(bytes, Charsets.UTF_8)
                 _messages.tryEmit(ChatMessage(text, isFromMe = true, timestamp = System.currentTimeMillis()))
             }
@@ -1698,10 +1714,10 @@ class BluetoothHandler(private val context: Context) {
                 updated
             } else {
                 val device = getConnectedDeviceByAddress(deviceAddress)
-                val name = device?.name ?: "Mesh Peer"
+                val fallbackName = device?.name ?: ""
                 updated + BluetoothPeer(
                     address = deviceAddress,
-                    name = name,
+                    name = fallbackName,
                     device = device,
                     lastSeen = System.currentTimeMillis(),
                     uuid = fullUuid

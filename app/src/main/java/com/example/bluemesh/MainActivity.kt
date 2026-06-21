@@ -37,6 +37,9 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.bluemesh.data.DefaultDataRepository
 import com.example.bluemesh.theme.BlueMeshTheme
+import com.example.bluemesh.theme.LocalIsDarkMode
+import com.example.bluemesh.theme.LocalBlueMeshColors
+import com.example.bluemesh.theme.LocalOnThemeToggle
 import com.example.bluemesh.ui.lock.LockScreen
 
 class MainActivity : ComponentActivity() {
@@ -55,9 +58,12 @@ class MainActivity : ComponentActivity() {
       lastBackgroundTime = savedInstanceState.getLong("last_background_time", 0L)
     }
     setContent {
-      BlueMeshTheme {
+      val context = LocalContext.current
+      val prefs = remember { context.getSharedPreferences("bluemesh_prefs", Context.MODE_PRIVATE) }
+      var isDarkMode by remember { mutableStateOf(prefs.getBoolean("is_dark_mode", true)) }
+
+      BlueMeshTheme(darkTheme = isDarkMode) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-          val context = LocalContext.current
           val repository = remember { DefaultDataRepository.getInstance(context.applicationContext) }
           val passcodeEnabled = repository.isPasscodeEnabled()
 
@@ -72,7 +78,15 @@ class MainActivity : ComponentActivity() {
               }
             )
           } else if (hasPermissionsState.value) {
-            MainNavigation()
+            CompositionLocalProvider(
+              LocalIsDarkMode provides isDarkMode,
+              LocalOnThemeToggle provides { enabled ->
+                prefs.edit().putBoolean("is_dark_mode", enabled).apply()
+                isDarkMode = enabled
+              }
+            ) {
+              MainNavigation()
+            }
           } else {
             PermissionScreen(
               onGrantClick = {
@@ -156,10 +170,11 @@ fun PermissionScreen(
   onSettingsClick: () -> Unit,
   modifier: Modifier = Modifier
 ) {
+  val colors = LocalBlueMeshColors.current
   Box(
     modifier = modifier
       .fillMaxSize()
-      .background(Color(0xFF0E131E)) // Matching v20 Navy palette
+      .background(colors.background)
       .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime))
       .padding(24.dp),
     contentAlignment = Alignment.Center
@@ -227,7 +242,7 @@ fun PermissionScreen(
           Icon(
             imageVector = Icons.Default.Bluetooth,
             contentDescription = "Bluetooth Status",
-            tint = Color.White,
+            tint = colors.onSurface,
             modifier = Modifier.size(48.dp)
           )
         }
@@ -237,7 +252,7 @@ fun PermissionScreen(
 
       Text(
         text = "Bluetooth Access Required",
-        color = Color.White,
+        color = colors.onSurface,
         fontSize = 24.sp,
         fontWeight = FontWeight.Bold,
         textAlign = TextAlign.Center
@@ -247,7 +262,7 @@ fun PermissionScreen(
 
       Text(
         text = "BlueMesh uses direct peer-to-peer Bluetooth connections to let you discover, connect, and chat with nearby devices offline.",
-        color = Color(0xFF94A3B8), // Slate 400
+        color = colors.textSecondary,
         fontSize = 15.sp,
         textAlign = TextAlign.Center,
         lineHeight = 22.sp,
@@ -278,7 +293,7 @@ fun PermissionScreen(
         ) {
           Text(
             text = "Grant Permissions",
-            color = Color.White,
+            color = colors.onSurface,
             fontSize = 16.sp,
             fontWeight = FontWeight.SemiBold
           )
@@ -296,7 +311,7 @@ fun PermissionScreen(
       ) {
         Text(
           text = "App Settings",
-          color = Color(0xFF3B82F6),
+          color = colors.primary,
           fontSize = 15.sp,
           fontWeight = FontWeight.Medium
         )

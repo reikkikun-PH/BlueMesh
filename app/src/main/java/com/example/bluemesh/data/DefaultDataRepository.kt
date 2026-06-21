@@ -96,9 +96,9 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
     private fun isRecentMeshTextDuplicate(senderUuid: String, text: String): Boolean {
         val now = System.currentTimeMillis()
+        recentMeshTexts.values.forEach { it.removeAll { e -> now - e.receivedAt > MESH_DEDUP_WINDOW_MS } }
+        if (recentMeshTexts.values.any { entries -> entries.any { it.text == text } }) return true
         val entries = recentMeshTexts.getOrPut(senderUuid) { mutableListOf() }
-        entries.removeAll { now - it.receivedAt > MESH_DEDUP_WINDOW_MS }
-        if (entries.any { it.text == text }) return true
         entries.add(MeshTextEntry(text, now))
         if (entries.size > 10) entries.removeAt(0)
         return false
@@ -137,6 +137,19 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     private val _chatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
     override val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
 
+    private fun reloadChatMessagesFromDb(contactUuid: String, filterPending: Boolean = false) {
+        val currentLatencyMap = _chatMessages.value.associate { (it.timestamp to it.isFromMe) to it.latencyMs }
+        val dbMessages = if (filterPending) {
+            dbHelper.getMessagesForContact(contactUuid).filter { it.status == "PENDING" }
+        } else {
+            dbHelper.getMessagesForContact(contactUuid)
+        }
+        _chatMessages.value = dbMessages.map { msg ->
+            val saved = currentLatencyMap[msg.timestamp to msg.isFromMe]
+            if (saved != null) msg.copy(latencyMs = saved) else msg
+        }
+    }
+
     init {
         // User UUID is generated dynamically only when passcode is created or reset
         bluetoothHandler.onPeerConnectionStatusChanged = { peerUuid, status ->
@@ -146,7 +159,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 if (status == ConnectionStatus.DISCONNECTED && isPasscodeEnabled()) {
                     scope.launch(Dispatchers.IO) {
                         try {
-                            _chatMessages.value = dbHelper.getMessagesForContact(activeChatUuid)
+                            reloadChatMessagesFromDb(activeChatUuid)
                         } catch (e: Exception) {
                             Log.e("DataRepository", "Error loading messages on peer disconnect", e)
                         }
@@ -283,7 +296,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             if (sent) {
                                 markMessageSent(request.timestamp)
                                 bluetoothHandler.cancelMeshAdvertise() // Cancel any active mesh ad
-                                delay(150) // Inter-message gap: give peer time to process before next message
+                                delay(80) // Inter-message gap: give peer time to process before next message
                             } else {
                                 shouldMeshAdvertise(request.text) // GATT failed, try mesh relay fallback
                                 Log.d("DataRepository", "Send failed for ${request.activeChatUuid}, will retry on reconnect.")
@@ -336,6 +349,14 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                     }
                 } catch (e: Exception) {
                     Log.e("DataRepository", "Error in onBluetoothStateOn invoke", e)
+                }
+            }
+            // Reconnect to active chat peer immediately (don't wait 5s for health monitor)
+            val currentChat = activeChatUuid
+            if (currentChat.isNotEmpty()) {
+                scope.launch(Dispatchers.IO) {
+                    delay(3000) // Give BT stack + scan time to settle + peer to re-advertise
+                    connectToPeerByUuid(currentChat)
                 }
             }
         }
@@ -403,7 +424,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         activeChatUuid = senderUuid
                         if (isPasscodeEnabled()) {
                             try {
-                                _chatMessages.value = dbHelper.getMessagesForContact(senderUuid)
+                                reloadChatMessagesFromDb(senderUuid)
                             } catch (e: Exception) {
                                 Log.e("DataRepository", "Error fetching messages for contact on uuid upgrade", e)
                             }
@@ -505,8 +526,8 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                               } else {
                                   bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, senderUuid) }?.device
                               }
-                              // Mesh re-broadcast dedup: catches relay echo duplicates by (sender, text)
-                              if (message.senderHash != null && isRecentMeshTextDuplicate(senderUuid, finalMessageText)) {
+                              // Mesh re-broadcast dedup: catches relay echo duplicates by text across all sender keys
+                              if (isRecentMeshTextDuplicate(senderUuid, finalMessageText)) {
                                   scope.launch {
                                       bluetoothHandler.sendAck(msgTimestamp, peerDevice)
                                   }
@@ -534,9 +555,14 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         if (senderUuid == activeChatUuid && !message.isFromMe) {
                             // Calculate one-way travel time (only for GATT messages with real timestamps)
                             val msgLatency = if (message.senderHash == null && msgTimestamp > 0) {
-                                System.currentTimeMillis() - msgTimestamp
+                                val raw = System.currentTimeMillis() - msgTimestamp
+                                if (raw < 0) 0L else raw
                             } else null
                             _chatMessages.update { current -> current + message.copy(text = finalMessageText, timestamp = msgTimestamp, latencyMs = msgLatency) }
+                            // Register in mesh dedup cache so relay echo doesn't create a duplicate
+                            if (finalMessageText.isNotEmpty()) {
+                                isRecentMeshTextDuplicate(senderUuid, finalMessageText)
+                            }
                         }
                     } catch (e: Exception) {
                         Log.e("DataRepository", "Error handling incoming message collect", e)
@@ -554,7 +580,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         if (status == ConnectionStatus.DISCONNECTED) {
                             if (activeChatUuid.isNotEmpty() && isPasscodeEnabled()) {
                                 try {
-                                    _chatMessages.value = dbHelper.getMessagesForContact(activeChatUuid)
+                                    reloadChatMessagesFromDb(activeChatUuid)
                                 } catch (e: Exception) {
                                     Log.e("DataRepository", "Error loading messages on disconnect", e)
                                 }
@@ -822,11 +848,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 }
             }
         }
-        _chatMessages.value = if (isPasscodeEnabled()) {
-            dbHelper.getMessagesForContact(uuid)
-        } else {
-            dbHelper.getMessagesForContact(uuid).filter { it.status == "PENDING" }
-        }
+        reloadChatMessagesFromDb(uuid, filterPending = !isPasscodeEnabled())
     }
 
     override fun connectToPeerByUuid(uuid: String) {

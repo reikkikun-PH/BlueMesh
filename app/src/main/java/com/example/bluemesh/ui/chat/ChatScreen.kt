@@ -33,6 +33,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.example.bluemesh.data.models.ConnectionStatus
 import com.example.bluemesh.ui.AccessibilityState
 import com.example.bluemesh.ui.LocalAccessibility
+import com.example.bluemesh.theme.LocalBlueMeshColors
 
 @Composable
 fun ChatScreen(
@@ -63,7 +64,7 @@ fun ChatScreen(
 
     var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
-
+    val colors = LocalBlueMeshColors.current
 
     val lifecycleOwner = LocalLifecycleOwner.current
     val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
@@ -107,7 +108,7 @@ fun ChatScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0E131E)) // Slate Navy background
+            .background(colors.background) // Slate Navy background
             .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime))
             .padding(16.dp)
     ) {
@@ -129,7 +130,7 @@ fun ChatScreen(
                     onClick = {
                         onBackClick()
                     },
-                    colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White)
+                    colors = IconButtonDefaults.iconButtonColors(contentColor = colors.onSurface)
                 ) {
                     Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back")
                 }
@@ -140,7 +141,7 @@ fun ChatScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = peerName,
-                            color = Color.White,
+                            color = colors.onSurface,
                             fontSize = accessibility.headerFontSize,
                             fontWeight = accessibility.headerFontWeight,
                             maxLines = 1,
@@ -152,7 +153,7 @@ fun ChatScreen(
                             Icon(
                                 imageVector = Icons.Default.CheckCircle,
                                 contentDescription = "Official Profile",
-                                tint = Color(0xFF3B82F6),
+                                tint = colors.primary,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -160,10 +161,10 @@ fun ChatScreen(
 
                     // Connection Status text with color
                     val (statusText, statusColor) = when (status) {
-                        ConnectionStatus.CONNECTING -> "Connecting..." to Color(0xFFF59E0B) // Amber
-                        ConnectionStatus.SYNCHRONIZING -> "Synchronizing..." to Color(0xFF38BDF8) // Sky Blue
-                        ConnectionStatus.CONNECTED -> "Connected" to Color(0xFF10B981) // Emerald
-                        ConnectionStatus.DISCONNECTED -> "Disconnected" to Color(0xFFEF4444) // Red
+                        ConnectionStatus.CONNECTING -> "Connecting..." to colors.warning // Amber
+                        ConnectionStatus.SYNCHRONIZING -> "Synchronizing..." to colors.info // Sky Blue
+                        ConnectionStatus.CONNECTED -> "Connected" to colors.success // Emerald
+                        ConnectionStatus.DISCONNECTED -> "Disconnected" to colors.error // Red
                     }
                     Text(
                         text = statusText,
@@ -177,7 +178,7 @@ fun ChatScreen(
 
                 IconButton(
                     onClick = { showDeleteConfirm.value = true },
-                    colors = IconButtonDefaults.iconButtonColors(contentColor = Color(0xFFEF4444))
+                    colors = IconButtonDefaults.iconButtonColors(contentColor = colors.error)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Delete,
@@ -191,25 +192,25 @@ fun ChatScreen(
                 AlertDialog(
                     onDismissRequest = { showDeleteConfirm.value = false },
                     title = {
-                        Text("Delete Chat History", color = Color.White)
+                        Text("Delete Chat History", color = colors.onSurface)
                     },
                     text = {
-                        Text("Are you sure you want to delete all chat history with this contact? This cannot be undone.", color = Color(0xFF94A3B8))
+                        Text("Are you sure you want to delete all chat history with this contact? This cannot be undone.", color = colors.textSecondary)
                     },
                     confirmButton = {
                         TextButton(onClick = {
                             showDeleteConfirm.value = false
                             viewModel.clearChatHistory()
                         }) {
-                            Text("Delete", color = Color(0xFFEF4444))
+                            Text("Delete", color = colors.error)
                         }
                     },
                     dismissButton = {
                         TextButton(onClick = { showDeleteConfirm.value = false }) {
-                            Text("Cancel", color = Color(0xFF94A3B8))
+                            Text("Cancel", color = colors.textSecondary)
                         }
                     },
-                    containerColor = Color(0xFF1D263B)
+                    containerColor = colors.surface
                 )
             }
 
@@ -234,7 +235,7 @@ fun ChatScreen(
                 if (textInput.length >= 200) {
                     Text(
                         text = "${textInput.length}/300",
-                        color = if (textInput.length == 300) Color(0xFFEF4444) else Color(0xFF3B82F6),
+                        color = if (textInput.length == 300) colors.error else colors.primary,
                         fontSize = accessibility.captionFontSize,
                         modifier = Modifier.align(Alignment.End).padding(end = 64.dp, bottom = 2.dp)
                     )
@@ -252,16 +253,16 @@ fun ChatScreen(
                                 textInput = it
                             }
                         },
-                        placeholder = { Text("Type a message...", color = Color(0xFF64748B)) },
+                        placeholder = { Text("Type a message...", color = colors.textTertiary) },
                         shape = RoundedCornerShape(24.dp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFF3B82F6),
-                            unfocusedBorderColor = Color(0xFF334155),
-                            focusedContainerColor = Color(0xFF1D263B),
-                            unfocusedContainerColor = Color(0xFF1D263B),
-                            cursorColor = Color(0xFF3B82F6)
+                            focusedTextColor = colors.onSurface,
+                            unfocusedTextColor = colors.onSurface,
+                            focusedBorderColor = colors.primary,
+                            unfocusedBorderColor = colors.divider,
+                            focusedContainerColor = colors.surface,
+                            unfocusedContainerColor = colors.surface,
+                            cursorColor = colors.primary
                         ),
                         modifier = Modifier
                             .weight(1f)
@@ -278,9 +279,9 @@ fun ChatScreen(
                     },
                     enabled = textInput.isNotBlank(),
                     colors = IconButtonDefaults.iconButtonColors(
-                        containerColor = if (textInput.isNotBlank()) Color(0xFF3B82F6) else Color(0xFF1D263B),
-                        contentColor = Color.White,
-                        disabledContainerColor = Color(0xFF1D263B),
+                        containerColor = if (textInput.isNotBlank()) colors.primary else colors.surface,
+                        contentColor = colors.onSurface,
+                        disabledContainerColor = colors.surface,
                         disabledContentColor = Color(0xFF475569)
                     ),
                     modifier = Modifier.size(48.dp)
@@ -298,13 +299,14 @@ fun ChatBubble(
     message: ChatMessage,
     accessibility: AccessibilityState = AccessibilityState()
 ) {
+    val colors = LocalBlueMeshColors.current
     val alignment = if (message.isFromMe) Alignment.CenterEnd else Alignment.CenterStart
     val bubbleColor = if (message.isFromMe) {
-        Brush.linearGradient(colors = listOf(Color(0xFF6366F1), Color(0xFF3B82F6)))
+        Brush.linearGradient(colors = listOf(Color(0xFF6366F1), colors.primary))
     } else {
-        Brush.linearGradient(colors = listOf(Color(0xFF1D263B), Color(0xFF1D263B)))
+        Brush.linearGradient(colors = listOf(colors.surface, colors.surface))
     }
-    val textColor = Color.White
+    val textColor = colors.onSurface
 
     Box(
         modifier = Modifier.fillMaxWidth(),
@@ -340,21 +342,21 @@ fun ChatBubble(
                     if (message.status == "PENDING") {
                         Text(
                             text = "Sending…",
-                            color = Color.White.copy(alpha = 0.6f),
+                            color = colors.onSurface.copy(alpha = 0.6f),
                             fontSize = 10.sp
                         )
                     } else if (message.status == "SENT") {
                         Icon(
                             imageVector = androidx.compose.material.icons.Icons.Default.Check,
                             contentDescription = "Sent",
-                            tint = Color.White.copy(alpha = 0.6f),
+                            tint = colors.onSurface.copy(alpha = 0.6f),
                             modifier = Modifier.size(12.dp)
                         )
                         if (message.latencyMs != null) {
                             Spacer(modifier = Modifier.width(3.dp))
                             Text(
                                 text = "${message.latencyMs}ms",
-                                color = Color.White.copy(alpha = 0.5f),
+                                color = colors.onSurface.copy(alpha = 0.5f),
                                 fontSize = 9.sp
                             )
                         }
@@ -364,7 +366,7 @@ fun ChatBubble(
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = "${message.latencyMs}ms",
-                    color = Color.White.copy(alpha = 0.5f),
+                    color = colors.onSurface.copy(alpha = 0.5f),
                     fontSize = 9.sp,
                     modifier = Modifier.align(Alignment.End)
                 )
