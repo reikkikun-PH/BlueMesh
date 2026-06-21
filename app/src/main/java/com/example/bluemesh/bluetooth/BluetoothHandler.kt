@@ -1651,6 +1651,15 @@ class BluetoothHandler(private val context: Context) {
                 Log.e(TAG, "sendMessageSuspend: targetDevice is null, cannot send")
                 return@withLock false
             }
+
+            val actualSendTime = System.currentTimeMillis()
+            // Overwrite the creation timestamp in the header with the actual transmission time (excludes buffer delay)
+            if (bytes.size >= 14 && bytes[0] == 1.toByte() && (bytes[1] == 2.toByte() || bytes[1] == 3.toByte())) {
+                ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).putLong(6, actualSendTime)
+            } else if (bytes.size >= 8) {
+                ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).putLong(0, actualSendTime)
+            }
+
             var payload: ByteArray
             try {
                 val fastCompressor = LZ4Factory.fastestInstance().fastCompressor()
@@ -1693,13 +1702,6 @@ class BluetoothHandler(private val context: Context) {
                 }
             }
 
-            var msgTimestamp: Long = 0
-            if (bytes.size >= 14 && bytes[0] == 1.toByte() && (bytes[1] == 2.toByte() || bytes[1] == 3.toByte())) {
-                msgTimestamp = ByteBuffer.wrap(bytes, 6, 8).order(ByteOrder.BIG_ENDIAN).long
-            } else if (bytes.size >= 8) {
-                msgTimestamp = ByteBuffer.wrap(bytes, 0, 8).order(ByteOrder.BIG_ENDIAN).long
-            }
-
             if (actualSendTimes.size > 500) {
                 val sortedKeys = actualSendTimes.keys.toList()
                 for (i in 0 until sortedKeys.size - 200) {
@@ -1707,10 +1709,7 @@ class BluetoothHandler(private val context: Context) {
                 }
             }
 
-            val actualSendTime = System.currentTimeMillis()
-            if (msgTimestamp != 0L) {
-                actualSendTimes[msgTimestamp] = actualSendTime
-            }
+            actualSendTimes[actualSendTime] = actualSendTime
 
             val success = sendChunksInternal(chunks, targetDevice)
             if (success) {

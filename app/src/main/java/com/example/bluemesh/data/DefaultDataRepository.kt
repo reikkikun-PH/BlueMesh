@@ -299,7 +299,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             if (sent && acked) {
                                 markMessageSent(request.timestamp)
                                 bluetoothHandler.cancelMeshAdvertise() // Cancel any active mesh ad
-                                delay(80) // Inter-message gap
+                                delay(800) // Inter-message gap (spamming buffer)
                             } else {
                                 Log.d("DataRepository", "GATT write failed or E2EE ACK timeout (acked=$acked) for ${request.activeChatUuid}, retrying.")
                                 connectToPeerByUuid(request.activeChatUuid)
