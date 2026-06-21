@@ -6,9 +6,9 @@
 #include <BLEAdvertising.h>
 #include <vector>
 #include <algorithm>
+#include <map>
 #include "esp_gap_ble_api.h"
 
-// Define the Service UUIDs for mesh communications and user discovery
 #define MESH_SERVICE_UUID "12345678-1234-5678-1234-567890abcdef"
 #define USER_SERVICE_UUID "b17c8a70-8bde-4d76-bc3e-1b32d2f7881c"
 
@@ -16,174 +16,191 @@
 #include <atomic>
 #include <freertos/semphr.h>
 
-// Sliding window cache configuration
-const size_t CACHE_MAX_SIZE = 50;
-std::vector<uint32_t> messageCache;
+// ----------------------------------------------------------------
+// Configuration
+// ----------------------------------------------------------------
+const size_t CACHE_MAX_SIZE = 200;                     // Dedup cache: remember this many message IDs
+const size_t MAX_QUEUE_SIZE = 16;                      // Larger queue for burst handling
+const int   SCAN_DURATION_SEC = 5;                     // Full scan cycle duration
+const int   ADV_DURATION_MS   = 2500;                  // Shorter ad window (2.5s vs 4s) to return to scan sooner
+const int   MIN_SCAN_MS       = 1000;                  // Never stop scanning before this (collect multiple msgs)
+const int   QUEUE_HIGH_WATER  = 10;                    // If queue > this, increase ad time
+const float RSSI_HYSTERESIS   = 5.0f;                  // dBm threshold to re-relay a message (skip if too weak)
 
-// State management variables
+// ----------------------------------------------------------------
+// State
+// ----------------------------------------------------------------
+std::vector<uint32_t> messageCache;
 std::queue<std::string> advertiseQueue;
-const size_t MAX_QUEUE_SIZE = 4;
 SemaphoreHandle_t stateMutex = nullptr;
 std::atomic<bool> advertisingMode(false);
 
-// Global BLE objects
+// Per-message RSSI tracking — only re-relay a message if we hear it stronger than before
+std::map<uint32_t, int> bestRssiPerMsg;
+
+// Self-broadcast detection: tag each relayed broadcast with a random ID so we can ignore our own
+uint32_t relayInstanceId;
+uint32_t relayedByTag;  // XOR mask applied to messageId to mark "relayed by this node"
+
 BLEScan* pBLEScan = nullptr;
 BLEAdvertising* pAdvertising = nullptr;
 
-// Deduplication function
+uint32_t totalUsersDetected = 0;
+uint32_t totalMessagesRelayed = 0;
+uint32_t totalMessagesSkipped = 0;
+uint32_t scanCount = 0;
+
+// ----------------------------------------------------------------
+// Deduplication
+// ----------------------------------------------------------------
 bool isDuplicate(uint32_t messageId) {
     auto it = std::find(messageCache.begin(), messageCache.end(), messageId);
-    if (it != messageCache.end()) {
-        return true;
-    }
+    if (it != messageCache.end()) return true;
     if (messageCache.size() >= CACHE_MAX_SIZE) {
-        messageCache.erase(messageCache.begin()); // Remove oldest
+        messageCache.erase(messageCache.begin());
     }
     messageCache.push_back(messageId);
     return false;
 }
 
-// Statistics counters
-uint32_t totalUsersDetected = 0;
-uint32_t totalMessagesRelayed = 0;
-
+// ----------------------------------------------------------------
+// Scan callbacks
+// ----------------------------------------------------------------
 class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
         bool isMesh = advertisedDevice.isAdvertisingService(BLEUUID(MESH_SERVICE_UUID));
         bool isUser = advertisedDevice.isAdvertisingService(BLEUUID(USER_SERVICE_UUID));
-        
-        // Filter by Service UUID
-        if (isMesh || isUser) {
-            if (advertisedDevice.haveManufacturerData()) {
-                auto rawData = advertisedDevice.getManufacturerData();
-                std::string mData(rawData.c_str(), rawData.length());
-                
-                // Distinguish between connectable (Peer Discovery) and non-connectable (Mesh Message)
-                if (isUser && advertisedDevice.isConnectable()) {
-                    // Peer Discovery (User advertisement)
-                    // Format: 2 bytes Company ID + 8 bytes short UUID + 1 byte passcode flag + Name (0-N bytes)
-                    if (mData.length() >= 11) {
-                        const uint8_t* uuid = (const uint8_t*)&mData[2];
-                        uint8_t passcodeFlag = mData[10];
-                        std::string displayName = "";
-                        if (mData.length() > 11) {
-                            displayName = mData.substr(11);
-                        }
-                        
-                        totalUsersDetected++;
-                        Serial.println("\n┌────────────────────────────────────────────────────────┐");
-                        Serial.printf("│ 👤 [USER DETECTED]                                     │\n");
-                        Serial.println("├────────────────────────────────────────────────────────┤");
-                        Serial.printf("│ Display Name:  %-40s │\n", displayName.c_str());
-                        Serial.printf("│ Passcode PIN:  %-40s │\n", (passcodeFlag == 1) ? "Locked (Required)" : "None (Disposable)");
-                        Serial.printf("│ Short UUID:    %02x%02x%02x%02x%02x%02x%02x%02x                        │\n",
-                                      uuid[0], uuid[1], uuid[2], uuid[3],
-                                      uuid[4], uuid[5], uuid[6], uuid[7]);
-                        Serial.printf("│ RSSI Strength: %-5d dBm                                │\n", advertisedDevice.getRSSI());
-                        Serial.printf("│ Total Seen:    %-5u                                    │\n", totalUsersDetected);
-                        Serial.println("└────────────────────────────────────────────────────────┘\n");
+
+        if (!isMesh && !isUser) return;
+        if (!advertisedDevice.haveManufacturerData()) return;
+
+        auto rawData = advertisedDevice.getManufacturerData();
+        std::string mData(rawData.c_str(), rawData.length());
+
+        if (isUser && advertisedDevice.isConnectable()) {
+            // Peer Discovery — just log, don't relay
+            if (mData.length() >= 11) {
+                const uint8_t* uuid = (const uint8_t*)&mData[2];
+                uint8_t passcodeFlag = mData[10];
+                std::string displayName = "";
+                if (mData.length() > 11) displayName = mData.substr(11);
+
+                totalUsersDetected++;
+                Serial.printf("[Relay] 👤 User \"%s\" (UUID: %02x%02x%02x%02x) RSSI=%d\n",
+                    displayName.c_str(), uuid[0], uuid[1], uuid[2], uuid[3],
+                    advertisedDevice.getRSSI());
+            }
+            return;
+        }
+
+        if (isMesh && !advertisedDevice.isConnectable()) {
+            // Mesh Message
+            if (mData.length() < 14) return;
+
+            uint32_t msgId = 0;
+            msgId |= (uint8_t)mData[2] << 24;
+            msgId |= (uint8_t)mData[3] << 16;
+            msgId |= (uint8_t)mData[4] << 8;
+            msgId |= (uint8_t)mData[5];
+
+            // Skip own broadcasts — ignore messages tagged with our relay instance
+            if ((msgId & 0xFF) == relayedByTag) {
+                return;
+            }
+
+            // RSSI gating: only queue if signal is stronger than our best for this message
+            int rssi = advertisedDevice.getRSSI();
+            auto bestIt = bestRssiPerMsg.find(msgId);
+            if (bestIt != bestRssiPerMsg.end() && rssi < bestIt->second - RSSI_HYSTERESIS) {
+                totalMessagesSkipped++;
+                return; // Already heard this stronger elsewhere
+            }
+
+            if (stateMutex == nullptr || xSemaphoreTake(stateMutex, portMAX_DELAY) != pdTRUE) return;
+
+            if (!isDuplicate(msgId)) {
+                if (advertiseQueue.size() < MAX_QUEUE_SIZE) {
+                    // Tag the message to mark it as relayed by us on next broadcast
+                    std::string tagged = mData;
+                    if (tagged.size() >= 6) {
+                        tagged[5] = relayedByTag;  // Overwrite low byte of msgId with relay tag
                     }
-                } else if (isMesh && !advertisedDevice.isConnectable()) {
-                    // Mesh Message
-                    // Format: 2 bytes Company ID + 4 bytes msgId + 4 bytes senderHash + 4 bytes recipientHash + Message Text
-                    if (mData.length() >= 14) {
-                        // Extract Message ID (Big Endian)
-                        uint32_t msgId = 0;
-                        msgId |= (uint8_t)mData[2] << 24;
-                        msgId |= (uint8_t)mData[3] << 16;
-                        msgId |= (uint8_t)mData[4] << 8;
-                        msgId |= (uint8_t)mData[5];
- 
-                        // Extract Sender Hash (Big Endian)
-                        uint32_t senderHash = 0;
-                        senderHash |= (uint8_t)mData[6] << 24;
-                        senderHash |= (uint8_t)mData[7] << 16;
-                        senderHash |= (uint8_t)mData[8] << 8;
-                        senderHash |= (uint8_t)mData[9];
- 
-                        // Extract Recipient Hash (Big Endian)
-                        uint32_t recipientHash = 0;
-                        recipientHash |= (uint8_t)mData[10] << 24;
-                        recipientHash |= (uint8_t)mData[11] << 16;
-                        recipientHash |= (uint8_t)mData[12] << 8;
-                        recipientHash |= (uint8_t)mData[13];
- 
-                        std::string msgText = "";
-                        if (mData.length() > 14) {
-                            msgText = mData.substr(14);
-                        }
- 
-                        if (stateMutex != nullptr && xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
-                            if (!isDuplicate(msgId)) {
-                                if (advertiseQueue.size() < MAX_QUEUE_SIZE) {
-                                    advertiseQueue.push(mData);
-                                    totalMessagesRelayed++;
-                                    Serial.println("\n┌────────────────────────────────────────────────────────┐");
-                                    Serial.printf("│ 📶 [RELAYING STORE-AND-FORWARD MESSAGE QUEUED]         │\n");
-                                    Serial.println("├────────────────────────────────────────────────────────┤");
-                                    Serial.printf("│ Message ID:    %-40u │\n", msgId);
-                                    Serial.printf("│ Sender Hash:   %08X                                 │\n", senderHash);
-                                    Serial.printf("│ Recipient Hash:%08X                                 │\n", recipientHash);
-                                    Serial.printf("│ Content:       \"%-38s\" │\n", msgText.c_str());
-                                    Serial.printf("│ RSSI Strength: %-5d dBm                                │\n", advertisedDevice.getRSSI());
-                                    Serial.printf("│ Queue Size:    %d/%d                                   │\n", advertiseQueue.size(), MAX_QUEUE_SIZE);
-                                    Serial.printf("│ Total Relayed: %-5u                                    │\n", totalMessagesRelayed);
-                                    Serial.println("└────────────────────────────────────────────────────────┘\n");
-                                    
-                                    // Stop scanning immediately to free the RF hardware if we aren't advertising
-                                    if (!advertisingMode) {
-                                        BLEDevice::getScan()->stop();
-                                    }
-                                } else {
-                                    Serial.printf("[Relay] Queue full, dropped message ID=%u\n", msgId);
-                                }
-                            } else {
-                                Serial.printf("[Relay] Intercepted message ID=%u (Duplicate, ignored)\n", msgId);
-                            }
-                            xSemaphoreGive(stateMutex);
-                        }
-                    }
+
+                    advertiseQueue.push(tagged);
+                    bestRssiPerMsg[msgId] = rssi;
+                    totalMessagesRelayed++;
+
+                    uint32_t senderHash = 0;
+                    senderHash |= (uint8_t)mData[6] << 24;
+                    senderHash |= (uint8_t)mData[7] << 16;
+                    senderHash |= (uint8_t)mData[8] << 8;
+                    senderHash |= (uint8_t)mData[9];
+
+                    uint32_t recipientHash = 0;
+                    recipientHash |= (uint8_t)mData[10] << 24;
+                    recipientHash |= (uint8_t)mData[11] << 16;
+                    recipientHash |= (uint8_t)mData[12] << 8;
+                    recipientHash |= (uint8_t)mData[13];
+
+                    std::string msgText = "";
+                    if (mData.length() > 14) msgText = mData.substr(14);
+
+                    Serial.printf("[Relay] 📶 QUEUED msgId=%u sender=%08X → %08X \"%s\" q=%d/%d rssi=%d\n",
+                        msgId, senderHash, recipientHash, msgText.c_str(),
+                        advertiseQueue.size(), MAX_QUEUE_SIZE, rssi);
+                } else {
+                    Serial.printf("[Relay] ⚠ DROPPED msgId=%u (queue full)\n", msgId);
                 }
             }
+            xSemaphoreGive(stateMutex);
         }
     }
 };
 
+// ----------------------------------------------------------------
+// Setup
+// ----------------------------------------------------------------
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    Serial.println("[Relay] Initializing BlueMesh ESP32 Infrastructure Relay...");
+    Serial.println("[Relay] BlueMesh ESP32 Relay v2 (Multi-User)");
 
-    // Initialize mutex
+    // Random instance identity — changes on every power cycle
+    relayInstanceId = esp_random();
+    relayedByTag = relayInstanceId & 0xFF;
+
     stateMutex = xSemaphoreCreateMutex();
 
-    // Initialize BLE stack
     BLEDevice::init("BlueMesh-Relay");
 
-    // Configure maximum transmit power (+9dBm) for all BLE operations
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV,     ESP_PWR_LVL_P9);
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN,    ESP_PWR_LVL_P9);
 
-    // Initialize Scan
     pBLEScan = BLEDevice::getScan();
-    pBLEScan->setAdvertisedDeviceCallbacks(new RelayScanCallbacks(), true); // wantDuplicates = true
-    pBLEScan->setActiveScan(true); // Active scan requests scan response (where manufacturer data resides)
+    pBLEScan->setAdvertisedDeviceCallbacks(new RelayScanCallbacks(), true);
+    pBLEScan->setActiveScan(true);
     pBLEScan->setInterval(100);
     pBLEScan->setWindow(99);
 
-    // Initialize Advertising
     pAdvertising = BLEDevice::getAdvertising();
 
-    Serial.println("[Relay] BLE Stack Initialized. Starting continuous scan...");
+    Serial.printf("[Relay] Instance tag=0x%02X  Queue=%d  Cache=%d\n",
+        relayedByTag, MAX_QUEUE_SIZE, CACHE_MAX_SIZE);
+    Serial.println("[Relay] Ready. Scanning...");
 }
 
+// ----------------------------------------------------------------
+// Loop
+// ----------------------------------------------------------------
 void loop() {
+    // Check queue (non-blocking mutex)
     bool hasPayload = false;
     std::string currentPayload = "";
+    size_t currentQueueSize = 0;
 
-    // Safely check if we have a payload to advertise
     if (stateMutex != nullptr && xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
+        currentQueueSize = advertiseQueue.size();
         if (!advertiseQueue.empty()) {
             currentPayload = advertiseQueue.front();
             advertiseQueue.pop();
@@ -192,22 +209,30 @@ void loop() {
         xSemaphoreGive(stateMutex);
     }
 
-    // If no new payload has been detected, run a scan cycle
+    // --- SCAN MODE ---
     if (!hasPayload) {
-        Serial.println("[Relay] Scanning for BlueMesh signals (Users / Messages)...");
+        scanCount++;
+        Serial.printf("[Relay] Scan #%u (queue=%d, relayed=%u, skipped=%u)...\n",
+            scanCount, currentQueueSize, totalMessagesRelayed, totalMessagesSkipped);
 
-        // Scan for 5 seconds. If a new payload is found, onResult() calls stop() 
-        // which makes start() return immediately.
-        pBLEScan->start(5, false);
-        
-        // Clear scan results to release memory and prevent heap fragmentation
+        // Full scan — do NOT stop early, collect ALL messages in this cycle
+        pBLEScan->start(SCAN_DURATION_SEC, false);
+
         pBLEScan->clearResults();
-    } else {
-        // We have a payload, switch to advertising mode
-        advertisingMode = true;
-        Serial.println("[Relay] Switching to Advertising Mode...");
 
-        // Extract Message ID from currentPayload
+        // Periodically trim RSSI cache to prevent memory bloat
+        if (scanCount % 10 == 0 && bestRssiPerMsg.size() > CACHE_MAX_SIZE) {
+            auto it = bestRssiPerMsg.begin();
+            std::advance(it, bestRssiPerMsg.size() - CACHE_MAX_SIZE);
+            bestRssiPerMsg.erase(bestRssiPerMsg.begin(), it);
+        }
+
+        Serial.printf("[Relay] Scan done. Queue now has %d messages.\n", currentQueueSize);
+
+    // --- ADVERTISING MODE ---
+    } else {
+        advertisingMode = true;
+
         uint32_t msgId = 0;
         if (currentPayload.length() >= 6) {
             msgId |= (uint8_t)currentPayload[2] << 24;
@@ -215,39 +240,34 @@ void loop() {
             msgId |= (uint8_t)currentPayload[4] << 8;
             msgId |= (uint8_t)currentPayload[5];
         }
-        Serial.printf("[Relay] Broadcasting relayed message ID=%u at +9dBm for 4 seconds...\n", msgId);
 
-        // Construct Advertisement Data
+        // Adaptive ad duration: longer if queue is backed up
+        float multiplier = 1.0f;
+        if (currentQueueSize > QUEUE_HIGH_WATER) multiplier = 1.5f;
+
+        int adDuration = (int)(ADV_DURATION_MS * multiplier);
+        Serial.printf("[Relay] 📡 Broadcasting msgId=%u for %dms (queue=%d)\n",
+            msgId, adDuration, currentQueueSize);
+
         BLEAdvertisementData oAdvertisementData;
-        // Flags: General Discoverable, BR/EDR Not Supported
         oAdvertisementData.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
-        // Add Service UUID
         oAdvertisementData.setCompleteServices(BLEUUID(MESH_SERVICE_UUID));
         pAdvertising->setAdvertisementData(oAdvertisementData);
 
-        // Construct Scan Response Data (prevents exceeding the 31-byte BLE limit)
         BLEAdvertisementData oScanResponseData;
-        // Add exact Manufacturer Data payload (Company ID + Message ID + Message Text)
+        // Re-broadcast the EXACT payload (already tagged with our relayedByTag)
         oScanResponseData.setManufacturerData(String(currentPayload.data(), currentPayload.length()));
         pAdvertising->setScanResponseData(oScanResponseData);
 
-        // Start broadcasting
         pAdvertising->start();
-        
-        // Ensure transmit power is set to maximum (+9dBm)
         esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
 
-        Serial.println("[Relay] Broadcasting payload at +9dBm for 4 seconds...");
-        delay(4000); // 4-second blast window
+        delay(adDuration);
 
-        // Stop advertising
         pAdvertising->stop();
-        Serial.println("[Relay] Broadcast finished. Re-entering Scanning Mode...");
-
-        // Reset state variables
         advertisingMode = false;
     }
 
-    // Yield to avoid watchdog timeout issues
+    // Short yield between cycles
     delay(10);
 }
