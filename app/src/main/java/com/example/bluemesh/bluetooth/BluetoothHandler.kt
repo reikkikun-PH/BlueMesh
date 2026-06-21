@@ -1095,6 +1095,10 @@ class BluetoothHandler(private val context: Context) {
         }
     }
 
+    fun cancelMeshAdvertise() {
+        meshAdvertiseJob?.cancel()
+    }
+
     private val meshAdvertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {}
         override fun onStartFailure(errorCode: Int) {}

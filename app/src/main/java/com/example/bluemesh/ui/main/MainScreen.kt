@@ -386,6 +386,28 @@ fun MainScreen(
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                val versionName = remember {
+                    try {
+                        val packageInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            context.packageManager.getPackageInfo(context.packageName, android.content.pm.PackageManager.PackageInfoFlags.of(0))
+                        } else {
+                            @Suppress("DEPRECATION")
+                            context.packageManager.getPackageInfo(context.packageName, 0)
+                        }
+                        packageInfo.versionName ?: "28.22"
+                    } catch (e: Exception) {
+                        "28.22"
+                    }
+                }
+                Text(
+                    text = "BlueMesh Version $versionName",
+                    color = Color(0xFF64748B),
+                    fontSize = accessibility.captionFontSize,
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                )
             }
         }
     }

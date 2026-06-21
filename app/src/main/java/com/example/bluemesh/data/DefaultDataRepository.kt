@@ -281,14 +281,18 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             pendingAcks.remove(request.timestamp)
                             if (sent) {
                                 markMessageSent(request.timestamp)
+                                bluetoothHandler.cancelMeshAdvertise() // Cancel any active mesh ad
                                 delay(150) // Inter-message gap: give peer time to process before next message
                             } else {
                                 shouldMeshAdvertise(request.text) // GATT failed, try mesh relay fallback
                                 Log.d("DataRepository", "Send failed for ${request.activeChatUuid}, will retry on reconnect.")
                             }
                         } else {
-                            shouldMeshAdvertise(request.text) // Peer not connected, broadcast via mesh
-                            Log.d("DataRepository", "Peer ${request.activeChatUuid} not ready for send. Triggering reconnect and re-queueing.")
+                            // Only mesh-broadcast once (first retry), not on every retry — prevents duplicate ads
+                            if (request.retryCount == 0) {
+                                shouldMeshAdvertise(request.text)
+                                Log.d("DataRepository", "Peer ${request.activeChatUuid} not ready, broadcasting first mesh ad.")
+                            }
                             connectToPeerByUuid(request.activeChatUuid)
                             if (request.retryCount < 15) {
                                 delay(200)
