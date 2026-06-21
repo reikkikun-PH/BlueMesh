@@ -172,6 +172,12 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         val peerDiscovered = discoveredPeers.value.any { com.example.bluemesh.utils.uuidsMatch(it.uuid, currentChat) }
                         if (peerDiscovered) {
                             val peerAddr = discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, currentChat) }?.address ?: ""
+                            // Reconnect if discovered but not connected/synchronizing
+                            val peerStatus = bluetoothHandler.getConnectionStatusForPeer(currentChat)
+                            if (peerStatus == ConnectionStatus.DISCONNECTED) {
+                                Log.d("DataRepository", "Peer $currentChat discovered but disconnected, reconnecting.")
+                                connectToPeerByUuid(currentChat)
+                            }
                             if (peerAddr.isNotEmpty() && bluetoothHandler.isStuckInSynchronizing(peerAddr)) {
                                 Log.w("DataRepository", "Peer $currentChat stuck in SYNCHRONIZING >15s, healing.")
                                 bluetoothHandler.resetClientConnection()
@@ -762,6 +768,18 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             val status = bluetoothHandler.getConnectionStatusForPeer(uuid)
             _activeConnectionStatus.value = status
             _activeIsReady.value = (status == ConnectionStatus.CONNECTED)
+            // Immediately trigger auto-connect if peer is discovered but not connected
+            if (status == ConnectionStatus.DISCONNECTED) {
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        // Small delay to let the UI settle
+                        delay(200)
+                        connectToPeerByUuid(uuid)
+                    } catch (e: Exception) {
+                        Log.e("DataRepository", "Error in setActiveChat auto-connect", e)
+                    }
+                }
+            }
         }
         _chatMessages.value = if (isPasscodeEnabled()) {
             dbHelper.getMessagesForContact(uuid)
@@ -775,6 +793,30 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             ?: bluetoothHandler.getDeviceByUuid(uuid)
         if (device != null) {
             bluetoothHandler.connectToPeer(device)
+        } else {
+            // Device not discovered yet — ensure scanning is active so discovery will find it
+            bluetoothHandler.startScanning()
+        }
+    }
+
+    override fun refreshConnection(uuid: String) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                Log.d("DataRepository", "Refreshing connection for $uuid")
+                // 1. Tear down stale client connection to this peer
+                val peer = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, uuid) }
+                if (peer != null) {
+                    bluetoothHandler.disconnectClient(peer.address)
+                }
+                // 2. Ensure scanning is active
+                bluetoothHandler.startScanning()
+                // 3. Wait briefly for discovery if needed
+                delay(500)
+                // 4. Reconnect
+                connectToPeerByUuid(uuid)
+            } catch (e: Exception) {
+                Log.e("DataRepository", "Error refreshing connection", e)
+            }
         }
     }
 

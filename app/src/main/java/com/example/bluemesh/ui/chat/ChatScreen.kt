@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -174,6 +175,17 @@ fun ChatScreen(
                 }
 
                 Spacer(modifier = Modifier.weight(1f))
+
+                IconButton(
+                    onClick = { viewModel.refresh() },
+                    colors = IconButtonDefaults.iconButtonColors(contentColor = Color(0xFF38BDF8))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Refresh Connection",
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
 
                 IconButton(
                     onClick = { showDeleteConfirm.value = true },
