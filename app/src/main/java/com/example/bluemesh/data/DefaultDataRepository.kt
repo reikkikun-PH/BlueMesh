@@ -799,27 +799,6 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         }
     }
 
-    override fun refreshConnection(uuid: String) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                Log.d("DataRepository", "Refreshing connection for $uuid")
-                // 1. Tear down stale client connection to this peer
-                val peer = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, uuid) }
-                if (peer != null) {
-                    bluetoothHandler.disconnectClient(peer.address)
-                }
-                // 2. Ensure scanning is active
-                bluetoothHandler.startScanning()
-                // 3. Wait briefly for discovery if needed
-                delay(500)
-                // 4. Reconnect
-                connectToPeerByUuid(uuid)
-            } catch (e: Exception) {
-                Log.e("DataRepository", "Error refreshing connection", e)
-            }
-        }
-    }
-
     private suspend fun sendPendingMessages(peerUuid: String) = withContext(Dispatchers.IO) {
         val canonicalUuid = dbHelper.getContactsList().find {
             com.example.bluemesh.utils.uuidsMatch(it.first, peerUuid)
