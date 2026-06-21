@@ -257,6 +257,7 @@ class BluetoothHandler(private val context: Context) {
     val isAdvertising: StateFlow<Boolean> = _isAdvertising.asStateFlow()
 
     private val deviceConnectionStatuses = java.util.concurrent.ConcurrentHashMap<String, ConnectionStatus>()
+    private val syncingStartTimes = java.util.concurrent.ConcurrentHashMap<String, Long>()
     var onPeerConnectionStatusChanged: ((String, ConnectionStatus) -> Unit)? = null
     var onPeerReadyCallback: ((String, BluetoothDevice) -> Unit)? = null
     var onKeyExchangeReceived: ((String, ByteArray, BluetoothDevice) -> Unit)? = null
@@ -275,6 +276,8 @@ class BluetoothHandler(private val context: Context) {
         }
         val serverAddress = uuidToServerAddress.entries.firstOrNull { com.example.bluemesh.utils.uuidsMatch(it.key, peerUuid) }?.value
         if (serverAddress != null) {
+            val serverStatus = deviceConnectionStatuses[serverAddress]
+            if (serverStatus != null) return serverStatus
             synchronized(connectedClients) {
                 if (connectedClients.any { it.address == serverAddress }) {
                     return ConnectionStatus.CONNECTED
@@ -330,10 +333,22 @@ class BluetoothHandler(private val context: Context) {
 
     private fun updateDeviceStatus(address: String, status: ConnectionStatus) {
         deviceConnectionStatuses[address] = status
+        if (status == ConnectionStatus.SYNCHRONIZING) {
+            syncingStartTimes.putIfAbsent(address, System.currentTimeMillis())
+        } else {
+            syncingStartTimes.remove(address)
+        }
         val peerUuid = _discoveredPeers.value.find { it.address == address }?.uuid
         if (peerUuid != null) {
             onPeerConnectionStatusChanged?.invoke(peerUuid, status)
         }
+    }
+
+    fun isStuckInSynchronizing(address: String, timeoutMs: Long = 15000): Boolean {
+        val status = deviceConnectionStatuses[address]
+        if (status != ConnectionStatus.SYNCHRONIZING) return false
+        val startTime = syncingStartTimes[address] ?: return false
+        return (System.currentTimeMillis() - startTime) > timeoutMs
     }
 
     private fun showToast(message: String) {
@@ -566,9 +581,9 @@ class BluetoothHandler(private val context: Context) {
                     cancelClientSyncTimeout()
                     val disconnectedAddress = gatt.device.address
                     deviceMtus.remove(disconnectedAddress)
-                    val wasAttemptingConnection = (_connectionStatus.value == ConnectionStatus.CONNECTING || _connectionStatus.value == ConnectionStatus.SYNCHRONIZING)
+                    val peerWasAttemptingConnection = (getConnectionStatusForAddress(disconnectedAddress) == ConnectionStatus.CONNECTING || getConnectionStatusForAddress(disconnectedAddress) == ConnectionStatus.SYNCHRONIZING)
                     
-                    if (status != 0 && wasAttemptingConnection) {
+                    if (status != 0 && peerWasAttemptingConnection) {
                         Log.w(TAG, "GATT connection failure status $status for $disconnectedAddress. Healing and retrying.")
                         refreshDeviceCache(gatt)
                     }
@@ -582,7 +597,7 @@ class BluetoothHandler(private val context: Context) {
                     }
                     clientConnections.remove(disconnectedAddress)
                     isDisconnecting.set(false)
-                    val peerUuid = _discoveredPeers.value.find { it.address == disconnectedAddress }?.uuid
+                    val peerUuid = _discoveredPeers.value.find { it.address == disconnectedAddress }?.uuid ?: uuidToServerAddress.entries.firstOrNull { it.value == disconnectedAddress }?.key
                     if (peerUuid != null) {
                         onPeerDisconnectedCallback?.invoke(peerUuid)
                     }
@@ -592,7 +607,7 @@ class BluetoothHandler(private val context: Context) {
                     }
                     currentWriteDeferreds.remove(disconnectedAddress)?.complete(false)
                     
-                    if (status != 0 && wasAttemptingConnection && !isCurrentConnectionRetry) {
+                    if (status != 0 && peerWasAttemptingConnection && !isCurrentConnectionRetry) {
                         scope.launch {
                             delay(500)
                             Log.d(TAG, "Triggering connection retry for $disconnectedAddress")
@@ -782,7 +797,7 @@ class BluetoothHandler(private val context: Context) {
         clientSyncTimeoutJob = scope.launch {
             try {
                 delay(10000) // 10-second timeout
-                if (_connectionStatus.value == ConnectionStatus.SYNCHRONIZING) {
+                if (getConnectionStatusForAddress(gatt.device.address) == ConnectionStatus.SYNCHRONIZING) {
                     Log.w(TAG, "Client synchronization timeout for ${gatt.device.address}. Healing connection.")
                     refreshDeviceCache(gatt)
                     disconnect()

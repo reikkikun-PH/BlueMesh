@@ -169,10 +169,19 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         peerReadyStates[peerUuid] = isReady
                     }
                     if (currentChat.isNotEmpty()) {
+                        val peerDiscovered = discoveredPeers.value.any { com.example.bluemesh.utils.uuidsMatch(it.uuid, currentChat) }
+                        if (peerDiscovered) {
+                            val peerAddr = discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, currentChat) }?.address ?: ""
+                            if (peerAddr.isNotEmpty() && bluetoothHandler.isStuckInSynchronizing(peerAddr)) {
+                                Log.w("DataRepository", "Peer $currentChat stuck in SYNCHRONIZING >15s, healing.")
+                                bluetoothHandler.resetClientConnection()
+                                delay(500)
+                                connectToPeerByUuid(currentChat)
+                            }
+                        }
                         val hasStuckPending = _chatMessages.value.any { it.isFromMe && it.status == "PENDING" && (now - it.timestamp > 20000) }
                         if (hasStuckPending) {
                             val peerStatus = bluetoothHandler.getConnectionStatusForPeer(currentChat)
-                            val peerDiscovered = discoveredPeers.value.any { com.example.bluemesh.utils.uuidsMatch(it.uuid, currentChat) }
                             if (peerStatus == ConnectionStatus.CONNECTED || peerStatus == ConnectionStatus.SYNCHRONIZING) {
                                 Log.w("DataRepository", "Stuck PENDING >20s while $peerStatus, resetting client.")
                                 bluetoothHandler.resetClientConnection()
