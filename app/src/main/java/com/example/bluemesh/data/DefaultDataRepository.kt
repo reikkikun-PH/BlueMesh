@@ -86,9 +86,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         scope.launch(Dispatchers.IO) {
             try { dbHelper.markMessageAsSent(timestamp) } catch (e: Exception) { Log.e("DataRepository", "Error marking msg sent in DB", e) }
         }
+        val latencyMs = System.currentTimeMillis() - timestamp
         _chatMessages.update { current ->
             current.map { msg ->
-                if (msg.isFromMe && msg.timestamp == timestamp && msg.status != "SENT") msg.copy(status = "SENT") else msg
+                if (msg.isFromMe && msg.timestamp == timestamp && msg.status != "SENT") msg.copy(status = "SENT", latencyMs = latencyMs) else msg
             }
         }
     }
@@ -531,7 +532,11 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         }
 
                         if (senderUuid == activeChatUuid && !message.isFromMe) {
-                            _chatMessages.update { current -> current + message.copy(text = finalMessageText, timestamp = msgTimestamp) }
+                            // Calculate one-way travel time (only for GATT messages with real timestamps)
+                            val msgLatency = if (message.senderHash == null && msgTimestamp > 0) {
+                                System.currentTimeMillis() - msgTimestamp
+                            } else null
+                            _chatMessages.update { current -> current + message.copy(text = finalMessageText, timestamp = msgTimestamp, latencyMs = msgLatency) }
                         }
                     } catch (e: Exception) {
                         Log.e("DataRepository", "Error handling incoming message collect", e)

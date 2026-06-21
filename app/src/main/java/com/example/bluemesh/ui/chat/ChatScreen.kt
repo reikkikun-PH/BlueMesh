@@ -350,8 +350,24 @@ fun ChatBubble(
                             tint = Color.White.copy(alpha = 0.6f),
                             modifier = Modifier.size(12.dp)
                         )
+                        if (message.latencyMs != null) {
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = "${message.latencyMs}ms",
+                                color = Color.White.copy(alpha = 0.5f),
+                                fontSize = 9.sp
+                            )
+                        }
                     }
                 }
+            } else if (message.latencyMs != null) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "${message.latencyMs}ms",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 9.sp,
+                    modifier = Modifier.align(Alignment.End)
+                )
             }
 
         }
