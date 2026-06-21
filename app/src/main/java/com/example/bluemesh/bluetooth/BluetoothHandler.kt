@@ -118,7 +118,16 @@ class BluetoothHandler(private val context: Context) {
                     scope.launch {
                         try {
                             delay(1000)
-                            startGattServer()
+                            var gattServerReady = startGattServer()
+                            var gattRetries = 0
+                            while (!gattServerReady && gattRetries < 5) {
+                                delay(500)
+                                gattServerReady = startGattServer()
+                                gattRetries++
+                            }
+                            if (!gattServerReady) {
+                                Log.e(TAG, "Failed to start GATT server after ${gattRetries + 1} attempts")
+                            }
                             onBluetoothStateOn?.invoke()
                         } catch (e: Exception) {
                             Log.e(TAG, "Error invoking onBluetoothStateOn", e)
@@ -1167,10 +1176,16 @@ class BluetoothHandler(private val context: Context) {
         }
     }
 
-    private fun startGattServer() {
-        if (bluetoothGattServer != null) return
+    private fun startGattServer(): Boolean {
+        if (bluetoothGattServer != null) return true
         try {
-            val server = bluetoothManager.openGattServer(context, gattServerCallback) ?: return
+            // Re-fetch BluetoothManager in case the stack was reset
+            val freshManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            val server = freshManager.openGattServer(context, gattServerCallback)
+            if (server == null) {
+                Log.w(TAG, "openGattServer returned null — BT may not be ready yet")
+                return false
+            }
             bluetoothGattServer = server
 
             val characteristic = BluetoothGattCharacteristic(
@@ -1185,8 +1200,10 @@ class BluetoothHandler(private val context: Context) {
                 addCharacteristic(characteristic)
             }
             server.addService(service)
+            return true
         } catch (e: Exception) {
             Log.e(TAG, "Error starting GATT Server", e)
+            return false
         }
     }
 

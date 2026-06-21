@@ -366,13 +366,8 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 } catch (e: Exception) {
                     Log.e("DataRepository", "Error in PeerReadyCallback launch", e)
                 }
-                if (peerUuid.isNotEmpty()) {
-                    sendPendingMessages(peerUuid)
-                }
-                // Also retry pending messages for the active chat if different
-                if (activeChatUuid.isNotEmpty() && !com.example.bluemesh.utils.uuidsMatch(peerUuid, activeChatUuid)) {
-                    sendPendingMessages(activeChatUuid)
-                }
+                // Pending messages are sent after key exchange completes
+                // to avoid encrypting with a stale key (see onKeyExchangeReceived)
             }
         }
 
