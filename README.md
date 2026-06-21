@@ -70,22 +70,22 @@ To extend the range of the offline network, BlueMesh supports standalone ESP32 h
 ```
 ├── app/
 │   ├── src/main/java/com/example/bluemesh/
-│   │   ├── MainActivity.kt        # Edge-to-edge drawing setup and runtime permissions
-│   │   ├── Navigation.kt          # Compose Navigation architecture
+│   │   ├── MainActivity.kt
+│   │   ├── Navigation.kt
 │   │   ├── bluetooth/
-│   │   │   └── BluetoothHandler.kt # Advertisements, scanning, and GATT operations
+│   │   │   └── BluetoothHandler.kt
 │   │   ├── data/
-│   │   │   ├── DefaultDataRepository.kt # Main repo orchestrating database queue & E2EE key sync
-│   │   │   └── OfflineQueueDbHelper.kt  # SQLite database helper for queue and contacts
+│   │   │   ├── DefaultDataRepository.kt
+│   │   │   └── OfflineQueueDbHelper.kt
 │   │   └── ui/
-│   │       ├── chat/              # Chat conversation screen and ViewModel
-│   │       ├── lock/              # PIN pad lock screens
-│   │       └── main/              # Main dashboard view
-│   └── build.gradle.kts           # App gradle build configuration
+│   │       ├── chat/
+│   │       ├── lock/
+│   │       └── main/
+│   └── build.gradle.kts
 ├── firmware/
-│   └── relay.ino                  # ESP32 flooding mesh relay firmware
-├── Dummy build/                   # Directory containing latest pre-compiled APKs
-└── README.md                      # This guide
+│   └── relay.ino
+├── Dummy build/
+└── README.md
 ```
 
 ---
@@ -97,11 +97,8 @@ To extend the range of the offline network, BlueMesh supports standalone ESP32 h
 2. Ensure you have **JDK 17** set as your Gradle JDK.
 3. Build the debug version or release version:
    ```powershell
-   # Compile Debug APK
-   .\gradlew.bat assembleDebug
-
-   # Compile Release APK
-   .\gradlew.bat assembleRelease
+    .\gradlew.bat assembleDebug
+    .\gradlew.bat assembleRelease
    ```
 4. Output APKs can be found in:
    - Debug: `app/build/outputs/apk/debug/app-debug.apk`
