@@ -171,6 +171,7 @@ class BluetoothHandler(private val context: Context) {
     private val lastChunkTimestamp = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     private fun handleIncomingValue(device: BluetoothDevice, value: ByteArray) {
+        val receiveTime = System.currentTimeMillis()
         handleIncomingPacket(device.address, value)?.let { (type, assembled) ->
             if (type == 2.toByte()) {
                 if (assembled.size >= 17) {
@@ -180,14 +181,21 @@ class BluetoothHandler(private val context: Context) {
             } else if (type == 1.toByte()) {
                 parseAndDecompress(assembled)?.let {
                     scope.launch {
-                        _messages.emit(ChatMessage(String(it, Charsets.ISO_8859_1), isFromMe = false, timestamp = System.currentTimeMillis(), senderAddress = device.address))
+                        _messages.emit(ChatMessage(String(it, Charsets.ISO_8859_1), isFromMe = false, timestamp = receiveTime, senderAddress = device.address))
                     }
                 }
             } else if (type == 3.toByte()) {
                 if (assembled.size >= 8) {
                     val ackTimestamp = ByteBuffer.wrap(assembled).long
+                    val actualSendTime = actualSendTimes.remove(ackTimestamp)
+                    val latencyMs = if (actualSendTime != null) {
+                        val rtt = receiveTime - actualSendTime
+                        if (rtt < 0) 0L else rtt / 2
+                    } else {
+                        null
+                    }
                     scope.launch {
-                        _acks.emit(ackTimestamp)
+                        _acks.emit(Pair(ackTimestamp, latencyMs))
                     }
                 }
             }
@@ -259,8 +267,9 @@ class BluetoothHandler(private val context: Context) {
     private val _messages = MutableSharedFlow<ChatMessage>(extraBufferCapacity = 128)
     val messages: SharedFlow<ChatMessage> = _messages.asSharedFlow()
 
-    private val _acks = MutableSharedFlow<Long>(extraBufferCapacity = 64)
-    val acks: SharedFlow<Long> = _acks.asSharedFlow()
+    private val _acks = MutableSharedFlow<Pair<Long, Long?>>(extraBufferCapacity = 64)
+    val acks: SharedFlow<Pair<Long, Long?>> = _acks.asSharedFlow()
+    private val actualSendTimes = java.util.concurrent.ConcurrentHashMap<Long, Long>()
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
@@ -398,7 +407,7 @@ class BluetoothHandler(private val context: Context) {
                     val messageText = String(manufacturerData.copyOfRange(12, manufacturerData.size), Charsets.UTF_8)
                     
                     if (!isDuplicateMessage(messageId)) {
-                        _messages.tryEmit(ChatMessage(text = messageText, isFromMe = false, timestamp = System.currentTimeMillis(), senderHash = senderHash, recipientHash = recipientHash))
+                        _messages.tryEmit(ChatMessage(text = messageText, isFromMe = false, timestamp = System.currentTimeMillis(), senderHash = senderHash, recipientHash = recipientHash, messageId = messageId))
                     }
                 }
                 return
@@ -1599,10 +1608,37 @@ class BluetoothHandler(private val context: Context) {
                 }
             }
 
+            var msgTimestamp: Long = 0
+            if (bytes.size >= 14 && bytes[0] == 1.toByte() && (bytes[1] == 2.toByte() || bytes[1] == 3.toByte())) {
+                msgTimestamp = ByteBuffer.wrap(bytes, 6, 8).order(ByteOrder.BIG_ENDIAN).long
+            } else if (bytes.size >= 8) {
+                msgTimestamp = ByteBuffer.wrap(bytes, 0, 8).order(ByteOrder.BIG_ENDIAN).long
+            }
+
+            if (actualSendTimes.size > 500) {
+                val sortedKeys = actualSendTimes.keys.toList()
+                for (i in 0 until sortedKeys.size - 200) {
+                    actualSendTimes.remove(sortedKeys[i])
+                }
+            }
+
+            val actualSendTime = System.currentTimeMillis()
+            if (msgTimestamp != 0L) {
+                actualSendTimes[msgTimestamp] = actualSendTime
+            }
+
             val success = sendChunksInternal(chunks, targetDevice)
             if (success) {
                 delay(30) // Settling delay: let BLE stack process before releasing mutex
-                val text = decodePayload(bytes)?.second ?: String(bytes, Charsets.UTF_8)
+                val text = if (bytes.size >= 14 && bytes[0] == 1.toByte() && (bytes[1] == 2.toByte() || bytes[1] == 3.toByte())) {
+                    if (bytes[1] == 2.toByte()) {
+                        "[Encrypted Message]"
+                    } else {
+                        String(bytes, 14, bytes.size - 14, Charsets.UTF_8)
+                    }
+                } else {
+                    decodePayload(bytes)?.second ?: String(bytes, Charsets.UTF_8)
+                }
                 _messages.tryEmit(ChatMessage(text, isFromMe = true, timestamp = System.currentTimeMillis()))
             }
             return@withLock success

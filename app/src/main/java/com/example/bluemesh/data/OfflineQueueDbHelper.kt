@@ -191,6 +191,25 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
         return exists
     }
 
+    fun getLastReceivedMessages(limit: Int): List<Triple<String, Long, String>> {
+        val list = mutableListOf<Triple<String, Long, String>>()
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT contact_uuid, timestamp, text FROM QueuedMessages WHERE is_from_me = 0 ORDER BY timestamp DESC LIMIT ?",
+            arrayOf(limit.toString())
+        )
+        if (cursor.moveToFirst()) {
+            do {
+                val contactUuid = cursor.getString(0) ?: ""
+                val timestamp = cursor.getLong(1)
+                val text = cursor.getString(2) ?: ""
+                list.add(Triple(contactUuid, timestamp, text))
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        return list
+    }
+
     fun updateMessageContactUuid(oldUuid: String, newUuid: String) {
         val db = writableDatabase
         val values = ContentValues().apply {

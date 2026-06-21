@@ -59,70 +59,59 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     )
     private val sendQueue = Channel<SendRequest>(Channel.BUFFERED)
 
-    private data class ProcessedMessageEntry(val senderUuid: String, val timestamp: Long)
     private val pendingAcks = java.util.concurrent.ConcurrentHashMap<Long, CompletableDeferred<Boolean>>()
-    private val processedMessagesCache = java.util.Collections.synchronizedList(mutableListOf<ProcessedMessageEntry>())
-    private val PROCESSED_CACHE_MAX_SIZE = 200
-
-    // Mesh re-broadcast dedup: keyed by (senderUuid, rawText) within a short window
-    private data class MeshTextEntry(val text: String, val receivedAt: Long)
-    private val recentMeshTexts = mutableMapOf<String, MutableList<MeshTextEntry>>()
-    private val MESH_DEDUP_WINDOW_MS = 3000L
+    private val seenStore = SeenMessageStore(400)
 
     private fun encryptPayload(timestamp: Long, text: String, sessionKey: ByteArray, messageId: Int): ByteArray {
-        val rawPayload = BluetoothHandler.encodePayload(timestamp, text)
+        val rawPayload = text.toByteArray(Charsets.UTF_8)
         val ciphertext = CryptoUtils.encryptAESGCM(rawPayload, sessionKey)
-        val encryptedId = messageId or java.lang.Integer.MIN_VALUE
-        val idBytes = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.BIG_ENDIAN).putInt(encryptedId).array()
-        return ByteArray(ciphertext.size + 6).apply {
-            this[0] = 1
-            this[1] = 2
-            System.arraycopy(idBytes, 0, this, 2, 4)
-            System.arraycopy(ciphertext, 0, this, 6, ciphertext.size)
+        val header = ByteBuffer.allocate(14).order(ByteOrder.BIG_ENDIAN).apply {
+            put(1.toByte())
+            put(2.toByte()) // E2EE flag
+            putInt(messageId)
+            putLong(timestamp)
+        }.array()
+        return ByteArray(header.size + ciphertext.size).apply {
+            System.arraycopy(header, 0, this, 0, header.size)
+            System.arraycopy(ciphertext, 0, this, header.size, ciphertext.size)
         }
     }
 
-    private fun markMessageSent(timestamp: Long) {
+    private fun encodePlaintextPayload(timestamp: Long, text: String, messageId: Int): ByteArray {
+        val textBytes = text.toByteArray(Charsets.UTF_8)
+        val header = ByteBuffer.allocate(14).order(ByteOrder.BIG_ENDIAN).apply {
+            put(1.toByte())
+            put(3.toByte()) // Plaintext flag
+            putInt(messageId)
+            putLong(timestamp)
+        }.array()
+        return ByteArray(header.size + textBytes.size).apply {
+            System.arraycopy(header, 0, this, 0, header.size)
+            System.arraycopy(textBytes, 0, this, header.size, textBytes.size)
+        }
+    }
+
+    private fun getMeshMessageDedupId(senderHash: Int, messageId: Int, text: String): String {
+        val stableId = messageId and 0xFFFFFF00.toInt()
+        val raw = "$senderHash:$stableId:$text"
+        return try {
+            val digest = java.security.MessageDigest.getInstance("MD5")
+            val hashBytes = digest.digest(raw.toByteArray(Charsets.UTF_8))
+            hashBytes.joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            raw
+        }
+    }
+
+    private fun markMessageSent(timestamp: Long, latencyMs: Long? = null) {
         scope.launch(Dispatchers.IO) {
             try { dbHelper.markMessageAsSent(timestamp) } catch (e: Exception) { Log.e("DataRepository", "Error marking msg sent in DB", e) }
         }
-        val latencyMs = System.currentTimeMillis() - timestamp
+        val finalLatency = latencyMs ?: (System.currentTimeMillis() - timestamp)
         _chatMessages.update { current ->
             current.map { msg ->
-                if (msg.isFromMe && msg.timestamp == timestamp && msg.status != "SENT") msg.copy(status = "SENT", latencyMs = latencyMs) else msg
+                if (msg.isFromMe && msg.timestamp == timestamp && msg.status != "SENT") msg.copy(status = "SENT", latencyMs = finalLatency) else msg
             }
-        }
-    }
-
-    private fun isRecentMeshTextDuplicate(senderUuid: String, text: String): Boolean {
-        val now = System.currentTimeMillis()
-        recentMeshTexts.values.forEach { it.removeAll { e -> now - e.receivedAt > MESH_DEDUP_WINDOW_MS } }
-        if (recentMeshTexts.values.any { entries -> entries.any { it.text == text } }) return true
-        val entries = recentMeshTexts.getOrPut(senderUuid) { mutableListOf() }
-        entries.add(MeshTextEntry(text, now))
-        if (entries.size > 10) entries.removeAt(0)
-        return false
-    }
-
-    private suspend fun isDuplicateMessage(senderUuid: String, timestamp: Long): Boolean = withContext(Dispatchers.IO) {
-        if (isPasscodeEnabled()) {
-            try {
-                if (dbHelper.isDuplicateMessage(senderUuid, timestamp)) {
-                    return@withContext true
-                }
-            } catch (e: Exception) {
-                Log.e("DataRepository", "Error checking duplicate in DB", e)
-            }
-        }
-        synchronized(processedMessagesCache) {
-            if (processedMessagesCache.any { it.senderUuid == senderUuid && it.timestamp == timestamp }) {
-                return@synchronized true
-            }
-            processedMessagesCache.add(ProcessedMessageEntry(senderUuid, timestamp))
-            if (processedMessagesCache.size > PROCESSED_CACHE_MAX_SIZE) {
-                processedMessagesCache.removeAt(0)
-            }
-            false
         }
     }
 
@@ -170,8 +159,35 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
         scope.launch(Dispatchers.IO) {
             try {
-                bluetoothHandler.acks.collect { ackTimestamp ->
-                    markMessageSent(ackTimestamp)
+                val recentMessages = dbHelper.getLastReceivedMessages(400)
+                for (msg in recentMessages) {
+                    val contactUuid = msg.first
+                    val timestamp = msg.second
+                    val text = msg.third
+                    
+                    val sHash = if (contactUuid.startsWith("mesh_")) {
+                        contactUuid.substringAfter("mesh_").toIntOrNull() ?: contactUuid.hashCode()
+                    } else {
+                        contactUuid.hashCode()
+                    }
+                    val mId = (timestamp and 0x7FFFFFFFL).toInt()
+                    
+                    val dedupKey = if (contactUuid.startsWith("mesh_")) {
+                        getMeshMessageDedupId(sHash, mId, text)
+                    } else {
+                        "gatt:$contactUuid:$mId"
+                    }
+                    seenStore.add(dedupKey)
+                }
+            } catch (e: Exception) {
+                Log.e("DataRepository", "Error populating seen store from DB", e)
+            }
+        }
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                bluetoothHandler.acks.collect { (ackTimestamp, latencyMs) ->
+                    markMessageSent(ackTimestamp, latencyMs)
                     pendingAcks.remove(ackTimestamp)?.let { it.complete(true) }
                 }
             } catch (e: Exception) {
@@ -485,65 +501,85 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
                         val textBytes = message.text.toByteArray(Charsets.ISO_8859_1)
                         var msgTimestamp = message.timestamp
+                        var msgId: Int? = null
                         var finalMessageText = ""
+
                         if (message.senderHash != null) {
-                            // Mesh message: raw text only (no timestamp prefix, no encryption)
+                            // Mesh message
+                            msgId = message.messageId
                             finalMessageText = message.text
-                        } else if (textBytes.size >= 6 && textBytes[0] == 1.toByte() && textBytes[1] == 2.toByte()) {
-                            // Encrypted payload
-                            val ciphertext = textBytes.copyOfRange(6, textBytes.size)
-                            val key = getSessionKeyForUuid(senderUuid)
-                            if (key != null) {
-                                try {
-                                    val decrypted = CryptoUtils.decryptAESGCM(ciphertext, key)
-                                    if (decrypted.size >= 8) {
-                                        msgTimestamp = ByteBuffer.wrap(decrypted).long
-                                        finalMessageText = String(decrypted, 8, decrypted.size - 8, Charsets.UTF_8)
-                                    } else {
+                        } else if (textBytes.size >= 14 && textBytes[0] == 1.toByte() && (textBytes[1] == 2.toByte() || textBytes[1] == 3.toByte())) {
+                            val headerBuffer = ByteBuffer.wrap(textBytes, 0, 14).order(ByteOrder.BIG_ENDIAN)
+                            headerBuffer.get() // Skip type (1)
+                            val formatType = headerBuffer.get() // format (2 or 3)
+                            msgId = headerBuffer.int
+                            msgTimestamp = headerBuffer.long
+
+                            if (formatType == 2.toByte()) {
+                                // Encrypted payload
+                                val ciphertext = textBytes.copyOfRange(14, textBytes.size)
+                                val key = getSessionKeyForUuid(senderUuid)
+                                if (key != null) {
+                                    try {
+                                        val decrypted = CryptoUtils.decryptAESGCM(ciphertext, key)
                                         finalMessageText = String(decrypted, Charsets.UTF_8)
+                                    } catch (e: Exception) {
+                                        Log.e("DataRepository", "Decryption failed for message from $senderUuid", e)
+                                        finalMessageText = "[Decryption Failed]"
                                     }
-                                } catch (e: Exception) {
-                                    Log.e("DataRepository", "Decryption failed for message from $senderUuid", e)
-                                    finalMessageText = "[Decryption Failed]"
+                                } else {
+                                    Log.w("DataRepository", "Missing session key for encrypted message from $senderUuid")
+                                    finalMessageText = "[Encrypted Message]"
                                 }
                             } else {
-                                Log.w("DataRepository", "Missing session key for encrypted message from $senderUuid")
-                                finalMessageText = "[Encrypted Message]"
+                                // Plaintext
+                                finalMessageText = String(textBytes, 14, textBytes.size - 14, Charsets.UTF_8)
                             }
                         } else {
-                            // Plaintext
+                            // Legacy plaintext fallback
                             if (textBytes.size >= 8) {
-                                msgTimestamp = ByteBuffer.wrap(textBytes).long
+                                msgTimestamp = ByteBuffer.wrap(textBytes, 0, 8).order(ByteOrder.BIG_ENDIAN).long
                                 finalMessageText = String(textBytes, 8, textBytes.size - 8, Charsets.UTF_8)
                             } else {
                                 finalMessageText = String(textBytes, Charsets.UTF_8)
                             }
+                            msgId = (msgTimestamp and 0x7FFFFFFFL).toInt()
                         }
 
-                          if (!message.isFromMe && senderUuid.isNotEmpty()) {
-                              val peerDevice = if (connectedAddress != null) {
-                                  bluetoothHandler.getConnectedDeviceByAddress(connectedAddress)
-                              } else {
-                                  bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, senderUuid) }?.device
-                              }
-                              // Mesh re-broadcast dedup: catches relay echo duplicates by text across all sender keys
-                              if (isRecentMeshTextDuplicate(senderUuid, finalMessageText)) {
-                                  scope.launch {
-                                      bluetoothHandler.sendAck(msgTimestamp, peerDevice)
-                                  }
-                                  return@collect
-                              }
-                              if (isDuplicateMessage(senderUuid, msgTimestamp)) {
-                                  scope.launch {
-                                      bluetoothHandler.sendAck(msgTimestamp, peerDevice)
-                                  }
-                                  return@collect
-                              }
-                              scope.launch {
-                                  bluetoothHandler.sendAck(msgTimestamp, peerDevice)
-                              }
-                          }
+                        // Calculate dedup key
+                        val senderHash = if (senderUuid.startsWith("mesh_")) {
+                            senderUuid.substringAfter("mesh_").toIntOrNull() ?: senderUuid.hashCode()
+                        } else {
+                            senderUuid.hashCode()
+                        }
 
+                        val dedupKey = if (message.senderHash != null || senderUuid.startsWith("mesh_")) {
+                            getMeshMessageDedupId(senderHash, msgId ?: 0, finalMessageText)
+                        } else {
+                            "gatt:$senderUuid:$msgId"
+                        }
+
+                        // Deduplication check
+                        val isDup = seenStore.isDuplicateAndTouch(dedupKey)
+
+                        // Send ACK even if duplicate (to stop peer retries)
+                        if (!message.isFromMe && senderUuid.isNotEmpty()) {
+                            val peerDeviceObj = if (connectedAddress != null) {
+                                bluetoothHandler.getConnectedDeviceByAddress(connectedAddress)
+                            } else {
+                                bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, senderUuid) }?.device
+                            }
+                            scope.launch {
+                                bluetoothHandler.sendAck(msgTimestamp, peerDeviceObj)
+                            }
+                            if (isDup) {
+                                return@collect
+                            }
+                        } else if (isDup) {
+                            return@collect
+                        }
+
+                        // Proceed with non-duplicate processing
                         if (isPasscodeEnabled() && senderUuid.isNotEmpty() && !message.isFromMe) {
                             try {
                                 dbHelper.insertMessage(senderUuid, finalMessageText, msgTimestamp, "RECEIVED", false)
@@ -553,15 +589,18 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         }
 
                         if (senderUuid == activeChatUuid && !message.isFromMe) {
-                            // Calculate one-way travel time (only for GATT messages with real timestamps)
+                            // Calculate one-way travel time using low-level receive timestamp (message.timestamp) and send timestamp (msgTimestamp)
                             val msgLatency = if (message.senderHash == null && msgTimestamp > 0) {
-                                val raw = System.currentTimeMillis() - msgTimestamp
+                                val raw = message.timestamp - msgTimestamp
                                 if (raw < 0) 0L else raw
                             } else null
-                            _chatMessages.update { current -> current + message.copy(text = finalMessageText, timestamp = msgTimestamp, latencyMs = msgLatency) }
-                            // Register in mesh dedup cache so relay echo doesn't create a duplicate
-                            if (finalMessageText.isNotEmpty()) {
-                                isRecentMeshTextDuplicate(senderUuid, finalMessageText)
+                            _chatMessages.update { current ->
+                                current + message.copy(
+                                    text = finalMessageText,
+                                    timestamp = msgTimestamp,
+                                    latencyMs = msgLatency,
+                                    messageId = msgId
+                                )
                             }
                         }
                     } catch (e: Exception) {
@@ -717,7 +756,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         val payload = if (sessionKey != null) {
             encryptPayload(timestamp, text, sessionKey, messageId)
         } else {
-            BluetoothHandler.encodePayload(timestamp, text)
+            encodePlaintextPayload(timestamp, text, messageId)
         }
 
         // Enqueue for serialized sending
@@ -901,7 +940,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             val payload = if (sessionKey != null) {
                 encryptPayload(msg.third, msg.second, sessionKey, msgId)
             } else {
-                BluetoothHandler.encodePayload(msg.third, msg.second)
+                encodePlaintextPayload(msg.third, msg.second, msgId)
             }
             // Enqueue through the serialized send queue
             sendQueue.send(SendRequest(
@@ -1124,5 +1163,35 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             if (meshId == hash) return true
         }
         return false
+    }
+}
+
+private class SeenMessageStore(private val capacity: Int = 400) {
+    private val set = LinkedHashSet<String>(capacity)
+
+    @Synchronized
+    fun isDuplicateAndTouch(id: String): Boolean {
+        if (set.contains(id)) {
+            set.remove(id)
+            set.add(id)
+            return true
+        }
+        if (set.size >= capacity) {
+            val oldest = set.iterator().next()
+            set.remove(oldest)
+        }
+        set.add(id)
+        return false
+    }
+
+    @Synchronized
+    fun add(id: String) {
+        if (set.contains(id)) {
+            set.remove(id)
+        } else if (set.size >= capacity) {
+            val oldest = set.iterator().next()
+            set.remove(oldest)
+        }
+        set.add(id)
     }
 }

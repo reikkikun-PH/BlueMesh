@@ -15,5 +15,6 @@ data class ChatMessage(
     val senderHash: Int? = null,
     val recipientHash: Int? = null,
     val senderAddress: String? = null,
-    val latencyMs: Long? = null
+    val latencyMs: Long? = null,
+    val messageId: Int? = null
 )
