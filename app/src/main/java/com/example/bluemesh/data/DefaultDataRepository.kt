@@ -230,6 +230,19 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             continue
                         }
 
+                        val messageId = (request.timestamp and 0x7FFFFFFFL).toInt()
+                        val shouldMeshAdvertise = { text: String ->
+                            if (text.isNotEmpty()) {
+                                scope.launch(Dispatchers.Default) {
+                                    try {
+                                        bluetoothHandler.advertiseMeshMessage(messageId, getUserUuid(), request.activeChatUuid, text)
+                                    } catch (e: Exception) {
+                                        Log.e("DataRepository", "Error advertising mesh message", e)
+                                    }
+                                }
+                            }
+                        }
+
                         if (bluetoothHandler.isPeerReady(request.activeChatUuid)) {
                             var sent = false
                             var acked = false
@@ -253,14 +266,17 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             pendingAcks.remove(request.timestamp)
                             if (sent) {
                                 markMessageSent(request.timestamp)
+                                shouldMeshAdvertise(request.text) // Broadcast via mesh for extended range
                                 if (!acked) {
                                     Log.w("DataRepository", "Message ${request.timestamp} sent but ACK not confirmed (peer may have received it)")
                                 }
                                 delay(150) // Inter-message gap: give peer time to process before next message
                             } else {
+                                shouldMeshAdvertise(request.text) // GATT failed, try mesh relay fallback
                                 Log.d("DataRepository", "Send failed for ${request.activeChatUuid}, will retry on reconnect.")
                             }
                         } else {
+                            shouldMeshAdvertise(request.text) // Peer not connected, broadcast via mesh
                             Log.d("DataRepository", "Peer ${request.activeChatUuid} not ready for send. Triggering reconnect and re-queueing.")
                             connectToPeerByUuid(request.activeChatUuid)
                             if (request.retryCount < 15) {

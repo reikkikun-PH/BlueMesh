@@ -1117,7 +1117,7 @@ class BluetoothHandler(private val context: Context) {
                 val recipientHash = if (recipientUuid.startsWith("mesh_")) recipientUuid.substringAfter("mesh_").toIntOrNull() ?: recipientUuid.hashCode() else recipientUuid.hashCode()
                 val messageBytes = messageText.toByteArray(Charsets.UTF_8)
                 
-                val truncatedBytes = if (messageBytes.size > 15) messageBytes.copyOfRange(0, 15) else messageBytes
+                val truncatedBytes = if (messageBytes.size > 17) messageBytes.copyOfRange(0, 17) else messageBytes
 
                 val manufacturerSpecificData = ByteBuffer.allocate(12 + truncatedBytes.size).apply {
                     order(ByteOrder.BIG_ENDIAN)
