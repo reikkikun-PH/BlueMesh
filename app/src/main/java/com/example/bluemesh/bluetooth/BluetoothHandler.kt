@@ -195,8 +195,9 @@ class BluetoothHandler(private val context: Context) {
                     } else {
                         null
                     }
+                    val originalCreationTime = otaToCreationTime.remove(ackTimestamp)
                     scope.launch {
-                        _acks.emit(Pair(ackTimestamp, latencyMs))
+                        _acks.emit(Pair(originalCreationTime ?: ackTimestamp, latencyMs))
                     }
                 }
             }
@@ -270,6 +271,7 @@ class BluetoothHandler(private val context: Context) {
     private val _acks = MutableSharedFlow<Pair<Long, Long?>>(extraBufferCapacity = 64)
     val acks: SharedFlow<Pair<Long, Long?>> = _acks.asSharedFlow()
     private val actualSendTimes = java.util.concurrent.ConcurrentHashMap<Long, Long>()
+    private val otaToCreationTime = java.util.concurrent.ConcurrentHashMap<Long, Long>()
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
@@ -1413,6 +1415,8 @@ class BluetoothHandler(private val context: Context) {
         currentNotificationDeferreds.values.forEach { it.complete(false) }
         currentNotificationDeferreds.clear()
         deviceMtus.clear()
+        actualSendTimes.clear()
+        otaToCreationTime.clear()
 
         synchronized(connectedClients) {
             connectedClients.forEach { device ->
@@ -1653,10 +1657,13 @@ class BluetoothHandler(private val context: Context) {
             }
 
             val actualSendTime = System.currentTimeMillis()
+            var originalCreationTime: Long = 0
             // Overwrite the creation timestamp in the header with the actual transmission time (excludes buffer delay)
             if (bytes.size >= 14 && bytes[0] == 1.toByte() && (bytes[1] == 2.toByte() || bytes[1] == 3.toByte())) {
+                originalCreationTime = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).getLong(6)
                 ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).putLong(6, actualSendTime)
             } else if (bytes.size >= 8) {
+                originalCreationTime = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).getLong(0)
                 ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).putLong(0, actualSendTime)
             }
 
@@ -1710,6 +1717,17 @@ class BluetoothHandler(private val context: Context) {
             }
 
             actualSendTimes[actualSendTime] = actualSendTime
+
+            if (otaToCreationTime.size > 500) {
+                val sortedKeys = otaToCreationTime.keys.toList()
+                for (i in 0 until sortedKeys.size - 200) {
+                    otaToCreationTime.remove(sortedKeys[i])
+                }
+            }
+
+            if (originalCreationTime != 0L) {
+                otaToCreationTime[actualSendTime] = originalCreationTime
+            }
 
             val success = sendChunksInternal(chunks, targetDevice)
             if (success) {
