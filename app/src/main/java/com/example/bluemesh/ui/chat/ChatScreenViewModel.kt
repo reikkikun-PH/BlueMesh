@@ -37,4 +37,8 @@ class ChatScreenViewModel(
         dataRepository.clearChatHistory()
     }
 
+    fun refresh() {
+        dataRepository.refreshConnection(peerUuid)
+    }
+
 }

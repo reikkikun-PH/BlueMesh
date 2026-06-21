@@ -1,8 +1,6 @@
 package com.example.bluemesh.ui.main
 
 import android.content.Context
-import android.content.Intent
-import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,7 +37,6 @@ import com.example.bluemesh.data.DefaultDataRepository
 import com.example.bluemesh.data.models.BluetoothPeer
 import com.example.bluemesh.ui.AccessibilityState
 import com.example.bluemesh.ui.LocalAccessibility
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -61,8 +58,6 @@ fun MainScreen(
     val isAdvertising by viewModel.isAdvertising.collectAsStateWithLifecycle()
     val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
     var isDiscoverable by remember { mutableStateOf(repository.isDiscoverableEnabled()) }
-    var refreshTapCount by remember { mutableIntStateOf(0) }
-    var lastRefreshTapTime by remember { mutableLongStateOf(0L) }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -233,39 +228,7 @@ fun MainScreen(
                     )
 
                     IconButton(
-                        onClick = {
-                            val now = System.currentTimeMillis()
-                            if (now - lastRefreshTapTime < 2000) {
-                                refreshTapCount++
-                            } else {
-                                refreshTapCount = 1
-                            }
-                            lastRefreshTapTime = now
-                            if (refreshTapCount >= 3) {
-                                refreshTapCount = 0
-                                // Hidden triple-tap: restart app to fix connections
-                                scope.launch {
-                                    try {
-                                        repository.clearDiscoveredPeers()
-                                        repository.stopScan()
-                                        repository.disconnect()
-                                        delay(200)
-                                        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                                        if (intent != null) {
-                                            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            context.startActivity(intent)
-                                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                (context as? android.app.Activity)?.finishAffinity()
-                                            }
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.e("MainScreen", "Error restarting app", e)
-                                    }
-                                }
-                            } else {
-                                viewModel.startScanning(clearList = true)
-                            }
-                        },
+                        onClick = { viewModel.startScanning(clearList = true) },
                         colors = IconButtonDefaults.iconButtonColors(contentColor = Color(0xFF3B82F6))
                     ) {
                         Icon(imageVector = Icons.Default.Refresh, contentDescription = "Rescan")

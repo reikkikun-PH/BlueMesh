@@ -37,6 +37,7 @@ interface DataRepository {
     fun isContact(uuid: String): Boolean
     fun setActiveChat(uuid: String)
     fun connectToPeerByUuid(uuid: String)
+    fun refreshConnection(uuid: String)
 
     fun isPasscodeEnabled(): Boolean
     fun savePasscode(pin: String)
