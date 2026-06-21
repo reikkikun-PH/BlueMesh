@@ -82,8 +82,10 @@ fun SetupScreen(
             OutlinedTextField(
                 value = nameInput,
                 onValueChange = {
-                    nameInput = it
-                    if (it.isNotBlank()) showError = false
+                    if (it.length <= 30) {
+                        nameInput = it
+                        if (it.isNotBlank()) showError = false
+                    }
                 },
                 placeholder = { Text("Enter display name...", color = Color(0xFF64748B)) },
                 singleLine = true,
