@@ -172,12 +172,11 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                     }
                     val mId = (timestamp and 0x7FFFFFFFL).toInt()
                     
-                    val dedupKey = if (contactUuid.startsWith("mesh_")) {
-                        getMeshMessageDedupId(sHash, mId, text)
-                    } else {
-                        "gatt:$contactUuid:$mId"
+                    val meshKey = getMeshMessageDedupId(sHash, mId, text)
+                    seenStore.add(meshKey)
+                    if (!contactUuid.startsWith("mesh_")) {
+                        seenStore.add("gatt:$contactUuid:$mId")
                     }
-                    seenStore.add(dedupKey)
                 }
             } catch (e: Exception) {
                 Log.e("DataRepository", "Error populating seen store from DB", e)
@@ -546,21 +545,22 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             msgId = (msgTimestamp and 0x7FFFFFFFL).toInt()
                         }
 
-                        // Calculate dedup key
+                        // Calculate dedup keys
                         val senderHash = if (senderUuid.startsWith("mesh_")) {
                             senderUuid.substringAfter("mesh_").toIntOrNull() ?: senderUuid.hashCode()
                         } else {
                             senderUuid.hashCode()
                         }
 
-                        val dedupKey = if (message.senderHash != null || senderUuid.startsWith("mesh_")) {
-                            getMeshMessageDedupId(senderHash, msgId ?: 0, finalMessageText)
-                        } else {
+                        val meshKey = getMeshMessageDedupId(senderHash, msgId ?: 0, finalMessageText)
+                        val gattKey = if (message.senderHash == null) {
                             "gatt:$senderUuid:$msgId"
-                        }
+                        } else null
 
-                        // Deduplication check
-                        val isDup = seenStore.isDuplicateAndTouch(dedupKey)
+                        // Check duplicate: true if either key is in the seen store
+                        val isMeshDup = seenStore.isDuplicateAndTouch(meshKey)
+                        val isGattDup = gattKey?.let { seenStore.isDuplicateAndTouch(it) } ?: false
+                        val isDup = isMeshDup || isGattDup
 
                         // Send ACK even if duplicate (to stop peer retries)
                         if (!message.isFromMe && senderUuid.isNotEmpty()) {
@@ -577,6 +577,12 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             }
                         } else if (isDup) {
                             return@collect
+                        }
+
+                        // If not a duplicate, ensure BOTH keys are registered in the seen store
+                        seenStore.add(meshKey)
+                        if (gattKey != null) {
+                            seenStore.add(gattKey)
                         }
 
                         // Proceed with non-duplicate processing
