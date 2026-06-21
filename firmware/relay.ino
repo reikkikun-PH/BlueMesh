@@ -50,6 +50,10 @@ uint32_t totalMessagesRelayed = 0;
 uint32_t totalMessagesSkipped = 0;
 uint32_t scanCount = 0;
 
+// User log rate-limiting — track last log time per user short-UUID prefix to avoid flooding
+std::map<uint32_t, uint32_t> userLogTimestamps;
+const uint32_t USER_LOG_INTERVAL_MS = 30000;  // Log same user at most once per 30s
+
 // ----------------------------------------------------------------
 // Deduplication
 // ----------------------------------------------------------------
@@ -86,9 +90,16 @@ class RelayScanCallbacks: public BLEAdvertisedDeviceCallbacks {
                 if (mData.length() > 11) displayName = mData.substr(11);
 
                 totalUsersDetected++;
-                Serial.printf("[Relay] 👤 User \"%s\" (UUID: %02x%02x%02x%02x) RSSI=%d\n",
-                    displayName.c_str(), uuid[0], uuid[1], uuid[2], uuid[3],
-                    advertisedDevice.getRSSI());
+                // Rate-limit per-user logs to prevent serial flooding
+                uint32_t userKey = (uint32_t)uuid[0] << 24 | (uint32_t)uuid[1] << 16 | (uint32_t)uuid[2] << 8 | uuid[3];
+                uint32_t now = millis();
+                auto lastLog = userLogTimestamps.find(userKey);
+                bool shouldLog = (lastLog == userLogTimestamps.end() || (now - lastLog->second) > USER_LOG_INTERVAL_MS);
+                if (shouldLog) {
+                    userLogTimestamps[userKey] = now;
+                    Serial.printf("[Relay] 👤 User \"%s\" detected (RSSI=%d dBm)\n",
+                        displayName.c_str(), advertisedDevice.getRSSI());
+                }
             }
             return;
         }

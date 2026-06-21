@@ -266,8 +266,8 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             pendingAcks.remove(request.timestamp)
                             if (sent) {
                                 markMessageSent(request.timestamp)
-                                shouldMeshAdvertise(request.text) // Broadcast via mesh for extended range
                                 if (!acked) {
+                                    shouldMeshAdvertise(request.text) // GATT sent but no ACK, broadcast via mesh
                                     Log.w("DataRepository", "Message ${request.timestamp} sent but ACK not confirmed (peer may have received it)")
                                 }
                                 delay(150) // Inter-message gap: give peer time to process before next message
