@@ -7,7 +7,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -25,10 +24,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Refresh
 import com.example.bluemesh.data.DefaultDataRepository
-import androidx.compose.runtime.DisposableEffect
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.Lifecycle
+import com.example.bluemesh.ui.LocalAccessibility
 
 @Composable
 fun SecurityScreen(
@@ -37,20 +33,10 @@ fun SecurityScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val accessibility = LocalAccessibility.current
     val repository = remember { DefaultDataRepository.getInstance(context.applicationContext) }
     var isShareLocationEnabled by remember { mutableStateOf(repository.isShareLocationEnabled()) }
     var showResetDialog by remember { mutableStateOf(false) }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            // Passcode is required and always enabled
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
 
     Box(
         modifier = Modifier
@@ -85,8 +71,8 @@ fun SecurityScreen(
                 Text(
                     text = "Security Settings",
                     color = Color.White,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold
+                    fontSize = accessibility.headerFontSize,
+                    fontWeight = accessibility.headerFontWeight
                 )
             }
 
@@ -137,13 +123,13 @@ fun SecurityScreen(
                                 Text(
                                     text = "Change Passcode",
                                     color = Color.White,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontSize = accessibility.bodyFontSize,
+                                    fontWeight = accessibility.bodyFontWeight
                                 )
                                 Text(
                                     text = "Update your 4-digit PIN",
                                     color = Color(0xFF94A3B8),
-                                    fontSize = 12.sp
+                                    fontSize = accessibility.captionFontSize
                                 )
                             }
                         }
@@ -191,13 +177,13 @@ fun SecurityScreen(
                                 Text(
                                     text = "Share Device Location",
                                     color = Color.White,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontSize = accessibility.bodyFontSize,
+                                    fontWeight = accessibility.bodyFontWeight
                                 )
                                 Text(
                                     text = "Allow to share proximity location",
                                     color = Color(0xFF94A3B8),
-                                    fontSize = 12.sp
+                                    fontSize = accessibility.captionFontSize
                                 )
                             }
                         }
@@ -258,13 +244,13 @@ fun SecurityScreen(
                                 Text(
                                     text = "Reset User ID",
                                     color = Color.White,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontSize = accessibility.bodyFontSize,
+                                    fontWeight = accessibility.bodyFontWeight
                                 )
                                 Text(
                                     text = "Generate a new static identifier",
                                     color = Color(0xFF94A3B8),
-                                    fontSize = 12.sp
+                                    fontSize = accessibility.captionFontSize
                                 )
                             }
                         }
@@ -303,7 +289,7 @@ fun SecurityScreen(
                 Text(
                     text = "BlueMesh Version $versionName",
                     color = Color(0xFF64748B),
-                    fontSize = 14.sp
+                    fontSize = accessibility.captionFontSize
                 )
             }
         }
@@ -325,7 +311,7 @@ fun SecurityScreen(
                     Text(
                         text = "Warning: Resetting your User ID will remove your connection to people who added you to their contacts. They will not be able to message you until they add your new ID.",
                         color = Color(0xFFEF4444),
-                        fontSize = 14.sp
+                        fontSize = accessibility.bodyFontSize
                     )
                 },
                 confirmButton = {

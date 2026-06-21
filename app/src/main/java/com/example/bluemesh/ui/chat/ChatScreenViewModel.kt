@@ -37,7 +37,4 @@ class ChatScreenViewModel(
         dataRepository.clearChatHistory()
     }
 
-    override fun onCleared() {
-        super.onCleared()
-    }
 }

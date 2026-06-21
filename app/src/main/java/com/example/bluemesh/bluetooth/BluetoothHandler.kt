@@ -49,6 +49,8 @@ class BluetoothHandler(private val context: Context) {
         private const val MESH_COMPANY_ID = 0xFFFF
         private const val PEER_MANUFACTURER_ID = 0xFFFF
         private const val CACHE_MAX_SIZE = 100
+        private const val MAX_CLIENT_CONNECTIONS = 3
+        private const val MAX_CONNECTIONS_OVERALL = 8
 
         fun encodePayload(timestamp: Long, text: String): ByteArray {
             val textBytes = text.toByteArray(Charsets.UTF_8)
@@ -73,9 +75,16 @@ class BluetoothHandler(private val context: Context) {
     private val scanner: BluetoothLeScanner? get() = bluetoothAdapter?.bluetoothLeScanner
     private val advertiser: BluetoothLeAdvertiser? get() = bluetoothAdapter?.bluetoothLeAdvertiser
 
-    private var bluetoothGatt: BluetoothGatt? = null
+    data class ClientConnection(
+        val gatt: BluetoothGatt,
+        val characteristic: BluetoothGattCharacteristic? = null,
+        val deviceAddress: String = "",
+        @Volatile var cccdReady: Boolean = false,
+        val connectedAt: Long = System.currentTimeMillis()
+    )
+
+    private val clientConnections = java.util.concurrent.ConcurrentHashMap<String, ClientConnection>()
     private var bluetoothGattServer: BluetoothGattServer? = null
-    private var messageCharacteristic: BluetoothGattCharacteristic? = null
 
     private val connectedClients = java.util.Collections.synchronizedSet(mutableSetOf<BluetoothDevice>())
     @Volatile private var connectedServerDevice: BluetoothDevice? = null
@@ -92,14 +101,14 @@ class BluetoothHandler(private val context: Context) {
     private var lastScanStartTime: Long = 0
     private var discoveryRetryCount = 0
     private val deviceMtus = java.util.concurrent.ConcurrentHashMap<String, Int>()
-    @Volatile private var currentWriteDeferred: CompletableDeferred<Boolean>? = null
+    private val currentWriteDeferreds = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
+    @Volatile private var isSending = false
     
     private val messageIdCache = java.util.Collections.synchronizedList(mutableListOf<Int>())
     private var meshAdvertiseJob: Job? = null
     private var lastDisplayName: String = ""
     @Volatile private var isStartingAdvertising = false
 
-    private var isReceiverRegistered = false
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
             if (BluetoothAdapter.ACTION_STATE_CHANGED == intent.action) {
@@ -121,6 +130,7 @@ class BluetoothHandler(private val context: Context) {
                         stopGattServer()
                         _connectionStatus.value = ConnectionStatus.DISCONNECTED
                         _isReady.value = false
+                        clientConnections.clear()
                         connectedClients.clear()
                         connectedServerDevice = null
                     } catch (e: Exception) {
@@ -134,13 +144,15 @@ class BluetoothHandler(private val context: Context) {
     init {
         try {
             context.registerReceiver(bluetoothStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
-            isReceiverRegistered = true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register bluetooth state receiver", e)
         }
+        startGattServer()
     }
 
     private val gattWriteMutex = Mutex()
+    private val uuidToServerAddress = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private var pendingConnectUuid: String? = null
 
     // Cache to assemble incoming chunked BLE packets
     private val incomingChunks = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.ConcurrentHashMap<Int, ByteArray>>()
@@ -189,6 +201,11 @@ class BluetoothHandler(private val context: Context) {
         var assembledData: ByteArray? = null
 
         synchronized(chunksMap) {
+            // If chunk 0 arrives but the map contains leftovers from a previous incomplete
+            // message (no chunk 0 present), clear to prevent cross-message chunk collision
+            if (chunkIndex == 0 && chunksMap.isNotEmpty() && !chunksMap.containsKey(0)) {
+                chunksMap.clear()
+            }
             chunksMap[chunkIndex] = data
 
             if (chunksMap.size == totalChunks) {
@@ -252,15 +269,26 @@ class BluetoothHandler(private val context: Context) {
 
     fun getConnectionStatusForPeer(peerUuid: String): ConnectionStatus {
         val peer = _discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid) }
-            ?: return ConnectionStatus.DISCONNECTED
-        return getConnectionStatusForAddress(peer.address)
+        if (peer != null) {
+            val status = getConnectionStatusForAddress(peer.address)
+            if (status != ConnectionStatus.DISCONNECTED) return status
+        }
+        val serverAddress = uuidToServerAddress.entries.firstOrNull { com.example.bluemesh.utils.uuidsMatch(it.key, peerUuid) }?.value
+        if (serverAddress != null) {
+            synchronized(connectedClients) {
+                if (connectedClients.any { it.address == serverAddress }) {
+                    return ConnectionStatus.CONNECTED
+                }
+            }
+        }
+        return ConnectionStatus.DISCONNECTED
     }
 
     fun isPeerConnected(peerUuid: String): Boolean {
         val peer = _discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid) }
             ?: return false
         val address = peer.address
-        if (bluetoothGatt?.device?.address == address) return true
+        if (clientConnections.containsKey(address)) return true
         synchronized(connectedClients) {
             if (connectedClients.any { it.address == address }) return true
         }
@@ -268,19 +296,34 @@ class BluetoothHandler(private val context: Context) {
     }
 
     fun isPeerReady(peerUuid: String): Boolean {
-        val peer = _discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid) }
-            ?: return false
-        val address = peer.address
-        val clientGatt = bluetoothGatt
-        if (clientGatt != null && clientGatt.device.address == address) {
-            return _isReady.value
+        val anyClientReady = clientConnections.values.any { conn ->
+            val clientMatch = _discoveredPeers.value.any { peer ->
+                com.example.bluemesh.utils.uuidsMatch(peer.uuid, peerUuid) && (peer.address == conn.deviceAddress || peer.device?.address == conn.deviceAddress)
+            }
+            clientMatch && conn.cccdReady
         }
-        val isServerConnected = synchronized(connectedClients) {
-            connectedClients.any { it.address == address }
+        if (anyClientReady) return true
+
+        synchronized(connectedClients) {
+            val serverAddress = connectedClients.firstOrNull { client ->
+                _discoveredPeers.value.any { peer -> com.example.bluemesh.utils.uuidsMatch(peer.uuid, peerUuid) && (peer.address == client.address || peer.device?.address == client.address) }
+            }?.address
+            if (serverAddress != null) {
+                val cccd = cccdStates[serverAddress]
+                if (cccd != null && cccd.isNotEmpty() && (cccd[0].toInt() and 0x01 != 0)) return true
+            }
         }
-        if (isServerConnected) {
-            val cccd = cccdStates[address]
-            return cccd != null && cccd.isNotEmpty() && (cccd[0].toInt() and 0x01 != 0)
+        val uuidAddress = uuidToServerAddress.entries.firstOrNull { com.example.bluemesh.utils.uuidsMatch(it.key, peerUuid) }?.value
+        if (uuidAddress != null) {
+            val clientReady = clientConnections.values.any { it.deviceAddress == uuidAddress && it.cccdReady }
+            if (clientReady) return true
+            synchronized(connectedClients) {
+                val hasClient = connectedClients.any { it.address == uuidAddress }
+                if (hasClient) {
+                    val cccd = cccdStates[uuidAddress]
+                    return cccd != null && cccd.isNotEmpty() && (cccd[0].toInt() and 0x01 != 0)
+                }
+            }
         }
         return false
     }
@@ -409,6 +452,11 @@ class BluetoothHandler(private val context: Context) {
             val peerUuid = _discoveredPeers.value.find { it.address == device.address }?.uuid
             if (peerUuid != null) {
                 onPeerDisconnectedCallback?.invoke(peerUuid)
+                uuidToServerAddress.keys.toList().forEach { key ->
+                    if (com.example.bluemesh.utils.uuidsMatch(key, peerUuid)) {
+                        uuidToServerAddress.remove(key)
+                    }
+                }
             }
             if (connectedServerDevice == null && connectedClients.isEmpty()) {
                 _connectionStatus.value = ConnectionStatus.DISCONNECTED
@@ -514,6 +562,7 @@ class BluetoothHandler(private val context: Context) {
                 connectionTimeoutJob?.cancel()
                 
                 if (status != 0 || newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    pendingConnectUuid = null
                     cancelClientSyncTimeout()
                     val disconnectedAddress = gatt.device.address
                     deviceMtus.remove(disconnectedAddress)
@@ -525,20 +574,23 @@ class BluetoothHandler(private val context: Context) {
                     }
                     
                     try { gatt.close() } catch (e: Exception) {}
-                    updateDeviceStatus(disconnectedAddress, ConnectionStatus.DISCONNECTED)
-                    if (bluetoothGatt == gatt) bluetoothGatt = null
+                    val isStillServerConnected = synchronized(connectedClients) {
+                        connectedClients.any { it.address == disconnectedAddress }
+                    }
+                    if (!isStillServerConnected) {
+                        updateDeviceStatus(disconnectedAddress, ConnectionStatus.DISCONNECTED)
+                    }
+                    clientConnections.remove(disconnectedAddress)
                     isDisconnecting.set(false)
-                    connectedServerDevice = null
                     val peerUuid = _discoveredPeers.value.find { it.address == disconnectedAddress }?.uuid
                     if (peerUuid != null) {
                         onPeerDisconnectedCallback?.invoke(peerUuid)
                     }
-                    if (connectedClients.isEmpty()) {
+                    if (connectedClients.isEmpty() && clientConnections.isEmpty()) {
                         _isReady.value = false
                         _connectionStatus.value = ConnectionStatus.DISCONNECTED
                     }
-                    currentWriteDeferred?.complete(false)
-                    currentWriteDeferred = null
+                    currentWriteDeferreds.remove(disconnectedAddress)?.complete(false)
                     
                     if (status != 0 && wasAttemptingConnection && !isCurrentConnectionRetry) {
                         scope.launch {
@@ -552,17 +604,33 @@ class BluetoothHandler(private val context: Context) {
 
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     isDisconnecting.set(false)
-                    connectedServerDevice = gatt.device
-                    updateDeviceStatus(gatt.device.address, ConnectionStatus.SYNCHRONIZING)
+                    val gattAddress = gatt.device.address
+
+                    // Enforce connection limits before accepting
+                    if (clientConnections.size >= MAX_CLIENT_CONNECTIONS) {
+                        Log.w(TAG, "Client connection limit reached ($MAX_CLIENT_CONNECTIONS), evicting oldest for $gattAddress")
+                        val oldest = clientConnections.entries.minByOrNull { it.value.connectedAt }
+                        oldest?.let { (addr, conn) ->
+                            Log.d(TAG, "Evicting oldest client connection: $addr")
+                            currentWriteDeferreds.remove(addr)?.complete(false)
+                            try { conn.gatt.disconnect(); conn.gatt.close() } catch (_: Exception) {}
+                            clientConnections.remove(addr)
+                        }
+                    }
+
+                    clientConnections[gattAddress] = ClientConnection(gatt = gatt, deviceAddress = gattAddress)
+                    updateDeviceStatus(gattAddress, ConnectionStatus.SYNCHRONIZING)
                     _connectionStatus.value = ConnectionStatus.SYNCHRONIZING
                     discoveryRetryCount = 0
                     startClientSyncTimeout(gatt)
+                    pendingConnectUuid?.let { uuid -> uuidToServerAddress[uuid] = gattAddress }
+                    pendingConnectUuid = null
                     scope.launch {
                         try {
-                            gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-                            gatt.requestMtu(512)
-                            delay(600)
+                            delay(300)
                             gatt.discoverServices()
+                            delay(800)
+                            gatt.requestMtu(512)
                         } catch (e: Exception) {
                             Log.e(TAG, "Error requesting connection configuration/discovery", e)
                         }
@@ -604,7 +672,11 @@ class BluetoothHandler(private val context: Context) {
                 val characteristic = gatt.getService(SERVICE_UUID)?.getCharacteristic(MESSAGE_CHARACTERISTIC_UUID)
                 
                 if (characteristic != null) {
-                    messageCharacteristic = characteristic
+                    val addr = gatt.device.address
+                    clientConnections.compute(addr) { _, existing ->
+                        if (existing != null) existing.copy(characteristic = characteristic)
+                        else ClientConnection(gatt = gatt, characteristic = characteristic, deviceAddress = addr)
+                    }
                     try {
                         gatt.setCharacteristicNotification(characteristic, true)
                     } catch (e: Exception) {
@@ -656,10 +728,16 @@ class BluetoothHandler(private val context: Context) {
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             try {
                 if (descriptor.uuid == CCCD_UUID) {
+                    val addr = gatt.device.address
+                    clientConnections.compute(addr) { _, existing ->
+                        if (existing != null) existing.copy(cccdReady = true)
+                        else ClientConnection(gatt = gatt, deviceAddress = addr, cccdReady = true)
+                    }
+                    cccdStates[addr] = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                     _isReady.value = true
                     _connectionStatus.value = ConnectionStatus.CONNECTED
-                    updateDeviceStatus(gatt.device.address, ConnectionStatus.CONNECTED)
-                    val peerUuid = _discoveredPeers.value.find { it.address == gatt.device.address }?.uuid ?: ""
+                    updateDeviceStatus(addr, ConnectionStatus.CONNECTED)
+                    val peerUuid = _discoveredPeers.value.find { it.address == addr }?.uuid ?: ""
                     onPeerReadyCallback?.invoke(peerUuid, gatt.device)
                 }
             } catch (e: Exception) {
@@ -669,7 +747,7 @@ class BluetoothHandler(private val context: Context) {
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             try {
-                currentWriteDeferred?.complete(status == BluetoothGatt.GATT_SUCCESS)
+                currentWriteDeferreds.remove(gatt.device.address)?.complete(status == BluetoothGatt.GATT_SUCCESS)
             } catch (e: Exception) {
                 Log.e(TAG, "Error in onCharacteristicWrite", e)
             }
@@ -758,7 +836,7 @@ class BluetoothHandler(private val context: Context) {
                 val now = System.currentTimeMillis()
                 _discoveredPeers.update { current ->
                     current.filter { peer ->
-                        val isConnected = (bluetoothGatt?.device?.address == peer.address) || 
+                        val isConnected = clientConnections.containsKey(peer.address) || 
                                           synchronized(connectedClients) { connectedClients.any { it.address == peer.address } }
                         isConnected || (now - peer.lastSeen < 25000)
                     }.sortedWith(compareBy({ it.name.lowercase() }, { it.address }))
@@ -921,7 +999,6 @@ class BluetoothHandler(private val context: Context) {
                     return@launch
                 }
 
-                stopGattServer()
                 startGattServer()
 
                 val settings = AdvertiseSettings.Builder()
@@ -1098,6 +1175,10 @@ class BluetoothHandler(private val context: Context) {
             bluetoothGattServer?.close()
             bluetoothGattServer = null
         } catch (e: Exception) {}
+        connectedClients.clear()
+        cccdStates.clear()
+        clientConnections.clear()
+        _isReady.value = false
     }
 
     fun connectToPeer(device: BluetoothDevice) {
@@ -1116,67 +1197,78 @@ class BluetoothHandler(private val context: Context) {
         connectionTimeoutJob?.cancel()
         isCurrentConnectionRetry = isRetry
         
-        val isClientConnected = bluetoothGatt?.device?.address == device.address
         val isServerConnected = connectedClients.any { it.address == device.address }
-        val isAlreadyConnected = (isClientConnected || isServerConnected) &&
-                (_connectionStatus.value == ConnectionStatus.CONNECTED ||
-                 _connectionStatus.value == ConnectionStatus.SYNCHRONIZING ||
-                 _connectionStatus.value == ConnectionStatus.CONNECTING)
 
-        if (isAlreadyConnected) {
-            Log.d(TAG, "Already connected/connecting to ${device.address}. Skipping reconnect.")
+        // If already server-connected (notification path works), skip creating a client connection.
+        if (isServerConnected) {
+            Log.d(TAG, "Peer ${device.address} already connected via GATT server. Skipping client connect.")
+            updateDeviceStatus(device.address, ConnectionStatus.CONNECTED)
+            synchronized(connectedClients) {
+                connectedClients.find { it.address == device.address }
+            }?.let { serverDevice ->
+                scope.launch {
+                    delay(300)
+                    val peerUuid = _discoveredPeers.value.find { it.address == serverDevice.address }?.uuid ?: ""
+                    if (peerUuid.isNotEmpty()) {
+                        onPeerReadyCallback?.invoke(peerUuid, serverDevice)
+                    }
+                }
+            }
             return
         }
 
-        // We no longer tear down unrelated server-role connections here. This preserves the multi-peer mesh connections.
+        // If already client-connected to this device, skip
+        if (clientConnections.containsKey(device.address)) {
+            Log.d(TAG, "Already client-connected to ${device.address}. Skipping reconnect.")
+            return
+        }
 
-        bluetoothGatt?.let {
-            try {
-                it.disconnect()
-                it.close()
-            } catch (e: Exception) {}
-            bluetoothGatt = null
-            isDisconnecting.set(false)
+        // Enforce connection limits before opening a new one
+        if (clientConnections.size >= MAX_CLIENT_CONNECTIONS || 
+            (clientConnections.size + connectedClients.size) >= MAX_CONNECTIONS_OVERALL) {
+            Log.w(TAG, "Connection limit reached, cannot connect to ${device.address}")
+            return
         }
 
         if (device.bondState != BluetoothDevice.BOND_NONE) {
             try { device.javaClass.getMethod("removeBond").invoke(device) } catch (e: Exception) {}
         }
 
-        // Do not call global disconnect() to avoid kicking other GATT server clients.
-        // Instead, only reset the local client states.
-        connectedServerDevice = null
-        messageCharacteristic = null
-
         updateDeviceStatus(device.address, ConnectionStatus.CONNECTING)
-        _connectionStatus.value = ConnectionStatus.CONNECTING
-        _isReady.value = false
         discoveryRetryCount = 0
         deviceMtus.remove(device.address)
+        pendingConnectUuid = _discoveredPeers.value.find { it.address == device.address }?.uuid
+            ?: _discoveredPeers.value.find { it.device?.address == device.address }?.uuid
 
         try {
-            val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE, BluetoothDevice.PHY_LE_1M_MASK)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
             } else {
                 device.connectGatt(context, false, gattCallback)
             }
-            bluetoothGatt = gatt
+            if (gatt != null) {
+                clientConnections[device.address] = ClientConnection(gatt = gatt, deviceAddress = device.address)
+            }
         } catch (e: Exception) {
-            _connectionStatus.value = ConnectionStatus.DISCONNECTED
+            clientConnections.remove(device.address)
+            updateDeviceStatus(device.address, ConnectionStatus.DISCONNECTED)
             return
         }
 
         connectionTimeoutJob = scope.launch {
             try {
                 delay(15000)
-                if (_connectionStatus.value == ConnectionStatus.CONNECTING) {
+                val conn = clientConnections[device.address]
+                if (conn != null && getConnectionStatusForAddress(device.address) == ConnectionStatus.CONNECTING) {
                     if (!isRetry) {
-                        disconnect()
+                        disconnectClient(device.address)
                         delay(300)
                         connectToPeerInternal(device, true)
                     } else {
-                        disconnect()
-                        _connectionStatus.value = ConnectionStatus.DISCONNECTED
+                        disconnectClient(device.address)
+                        updateDeviceStatus(device.address, ConnectionStatus.DISCONNECTED)
                         showToast("Connection timed out. Please try again.")
                     }
                 }
@@ -1189,8 +1281,7 @@ class BluetoothHandler(private val context: Context) {
     fun disconnect() {
         connectionTimeoutJob?.cancel()
         cancelClientSyncTimeout()
-        currentWriteDeferred?.complete(false)
-        currentWriteDeferred = null
+        currentWriteDeferreds.clear()
         deviceMtus.clear()
 
         synchronized(connectedClients) {
@@ -1205,44 +1296,55 @@ class BluetoothHandler(private val context: Context) {
             connectedClients.clear()
         }
 
-        bluetoothGatt?.device?.address?.let {
-            updateDeviceStatus(it, ConnectionStatus.DISCONNECTED)
-        }
-
-        val gatt = bluetoothGatt
-        if (gatt == null) {
-            _connectionStatus.value = ConnectionStatus.DISCONNECTED
-            _isReady.value = false
-            connectedServerDevice = null
-            messageCharacteristic = null
-            return
-        }
-
-        if (isDisconnecting.get()) return
-        isDisconnecting.set(true)
-        _connectionStatus.value = ConnectionStatus.DISCONNECTED
-        _isReady.value = false
-        connectedServerDevice = null
-        messageCharacteristic = null
-        try {
-            gatt.disconnect()
-            scope.launch {
+        val addresses = clientConnections.keys.toList()
+        addresses.forEach { addr ->
+            clientConnections.remove(addr)?.let { conn ->
+                updateDeviceStatus(addr, ConnectionStatus.DISCONNECTED)
                 try {
-                    delay(100)
-                    if (isDisconnecting.get()) {
-                        try { gatt.close() } catch (e: Exception) {}
-                        bluetoothGatt = null
-                        isDisconnecting.set(false)
-                    }
+                    conn.gatt.disconnect()
+                    conn.gatt.close()
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error in disconnect close launch", e)
+                    Log.e(TAG, "Error disconnecting GATT client $addr", e)
                 }
             }
-        } catch (e: Exception) {
-            try { gatt.close() } catch (ex: Exception) {}
-            bluetoothGatt = null
-            isDisconnecting.set(false)
         }
+
+        _connectionStatus.value = ConnectionStatus.DISCONNECTED
+        _isReady.value = false
+    }
+
+    fun disconnectClient(deviceAddress: String) {
+        clientConnections.remove(deviceAddress)?.let { conn ->
+            currentWriteDeferreds.remove(deviceAddress)?.complete(false)
+            try {
+                conn.gatt.disconnect()
+                conn.gatt.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error disconnecting GATT client for $deviceAddress", e)
+            }
+            val isStillServerConnected = synchronized(connectedClients) {
+                connectedClients.any { it.address == deviceAddress }
+            }
+            if (!isStillServerConnected) {
+                updateDeviceStatus(deviceAddress, ConnectionStatus.DISCONNECTED)
+            }
+        }
+        if (clientConnections.isEmpty() && connectedClients.isEmpty()) {
+            _isReady.value = false
+            _connectionStatus.value = ConnectionStatus.DISCONNECTED
+        }
+    }
+
+    fun resetClientConnection() {
+        connectionTimeoutJob?.cancel()
+        cancelClientSyncTimeout()
+
+        val allAddresses = clientConnections.keys.toList()
+        allAddresses.forEach { addr -> disconnectClient(addr) }
+        currentWriteDeferreds.clear()
+        clientConnections.clear()
+        _isReady.value = false
+        _connectionStatus.value = ConnectionStatus.DISCONNECTED
     }
 
     fun getConnectedDeviceAddress(): String? {
@@ -1292,81 +1394,116 @@ class BluetoothHandler(private val context: Context) {
         }
     }
 
-    private suspend fun sendChunksInternal(chunks: List<ByteArray>, targetDevice: BluetoothDevice? = null): Boolean {
-        val charClient = messageCharacteristic
-        val gattClient = bluetoothGatt
-        if (gattClient != null && charClient != null && (targetDevice == null || targetDevice.address == gattClient.device.address)) {
-            var success = true
-            for (chunk in chunks) {
-                val deferred = CompletableDeferred<Boolean>()
-                currentWriteDeferred = deferred
-                val writeSuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    gattClient.writeCharacteristic(charClient, chunk, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
-                } else {
-                    @Suppress("DEPRECATION")
-                    charClient.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                    @Suppress("DEPRECATION")
-                    charClient.value = chunk
-                    @Suppress("DEPRECATION")
-                    gattClient.writeCharacteristic(charClient)
-                }
-                if (!writeSuccess) {
-                    currentWriteDeferred = null
-                    success = false
-                    break
-                }
-                val callbackResult = withTimeoutOrNull(2000) { deferred.await() }
-                currentWriteDeferred = null
-                if (callbackResult != true) {
-                    success = false
-                    break
-                }
-            }
-            if (success) return true
+    fun getConnectedDeviceByPeerUuid(peerUuid: String): BluetoothDevice? {
+        synchronized(connectedClients) {
+            connectedClients.firstOrNull { client ->
+                _discoveredPeers.value.any { peer -> com.example.bluemesh.utils.uuidsMatch(peer.uuid, peerUuid) && peer.address == client.address }
+            }?.let { return it }
         }
+        val clientMatch = clientConnections.values.firstOrNull { conn ->
+            _discoveredPeers.value.any { peer -> com.example.bluemesh.utils.uuidsMatch(peer.uuid, peerUuid) && peer.address == conn.deviceAddress }
+        }
+        if (clientMatch != null) return clientMatch.gatt.device
 
-        val server = bluetoothGattServer
-        val activeClient = if (targetDevice != null) {
-            synchronized(connectedClients) { connectedClients.find { it.address == targetDevice.address } } ?: targetDevice
-        } else {
+        val addr = uuidToServerAddress.entries.firstOrNull { com.example.bluemesh.utils.uuidsMatch(it.key, peerUuid) }?.value
+        if (addr != null) {
             synchronized(connectedClients) {
-                if (connectedClients.size == 1) connectedClients.first() else null
+                connectedClients.firstOrNull { it.address == addr }?.let { return it }
             }
+            clientConnections[addr]?.let { return it.gatt.device }
         }
-        if (server != null && activeClient != null) {
-            val characteristic = server.getService(SERVICE_UUID)?.getCharacteristic(MESSAGE_CHARACTERISTIC_UUID)
-            if (characteristic != null) {
+        return _discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, peerUuid) }?.device
+    }
+
+    private suspend fun sendChunksInternal(chunks: List<ByteArray>, targetDevice: BluetoothDevice? = null): Boolean {
+        val targetAddress = targetDevice?.address
+        val targetUuid = targetAddress?.let { addr ->
+            _discoveredPeers.value.find { it.address == addr }?.uuid
+                ?: uuidToServerAddress.entries.firstOrNull { it.value == addr }?.key
+        } ?: ""
+
+        // Path A: Send via GATT client connection (write to peer's characteristic)
+        if (targetAddress != null) {
+            val conn = clientConnections[targetAddress]
+            if (conn != null && conn.characteristic != null) {
+                val gatt = conn.gatt
+                val char = conn.characteristic
                 var success = true
                 for (chunk in chunks) {
-                    val notifySuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        server.notifyCharacteristicChanged(activeClient, characteristic, false, chunk) == BluetoothStatusCodes.SUCCESS
+                    val deferred = CompletableDeferred<Boolean>()
+                    currentWriteDeferreds[targetAddress] = deferred
+                    val writeSuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        gatt.writeCharacteristic(char, chunk, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
                     } else {
                         @Suppress("DEPRECATION")
-                        characteristic.value = chunk
+                        char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                         @Suppress("DEPRECATION")
-                        server.notifyCharacteristicChanged(activeClient, characteristic, false)
+                        char.value = chunk
+                        @Suppress("DEPRECATION")
+                        gatt.writeCharacteristic(char)
                     }
-                    if (!notifySuccess) {
+                    if (!writeSuccess) {
+                        currentWriteDeferreds.remove(targetAddress)
                         success = false
                         break
                     }
-                    if (chunks.size > 1) {
-                        delay(80)
+                    val callbackResult = withTimeoutOrNull(5000) { deferred.await() }
+                    currentWriteDeferreds.remove(targetAddress)
+                    if (callbackResult != true) {
+                        success = false
+                        break
                     }
+                    if (chunks.size > 1) delay(50)
                 }
                 if (success) return true
+            }
+        }
+
+        // Path B: Send via GATT server notification (peer is connected to our server)
+        val server = bluetoothGattServer
+        val activeClient = targetDevice?.let { targetDev ->
+            val byAddress = synchronized(connectedClients) { connectedClients.find { it.address == targetDev.address } }
+            if (byAddress != null) byAddress
+            else if (targetUuid.isNotEmpty()) getConnectedDeviceByPeerUuid(targetUuid)
+            else null
+        } ?: targetDevice?.address?.let { addr ->
+            val uuid = uuidToServerAddress.entries.firstOrNull { it.value == addr }?.key
+            if (uuid != null) getDeviceByUuid(uuid) else null
+        } ?: targetDevice
+        if (activeClient != null && server != null) {
+            val characteristic = server.getService(SERVICE_UUID)?.getCharacteristic(MESSAGE_CHARACTERISTIC_UUID)
+            if (characteristic != null) {
+                var allSent = true
+                for (chunk in chunks) {
+                    var chunkOk = false
+                    for (attempt in 1..3) {
+                        val notifySuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            server.notifyCharacteristicChanged(activeClient, characteristic, false, chunk) == BluetoothStatusCodes.SUCCESS
+                        } else {
+                            @Suppress("DEPRECATION")
+                            characteristic.value = chunk
+                            @Suppress("DEPRECATION")
+                            server.notifyCharacteristicChanged(activeClient, characteristic, false)
+                        }
+                        if (notifySuccess) { chunkOk = true; break }
+                        delay(30)
+                    }
+                    if (!chunkOk) { allSent = false; break }
+                    if (chunks.size > 1) delay(100)
+                }
+                if (allSent) return true
             }
         }
         return false
     }
 
-    suspend fun sendMessage(text: String): Boolean {
-        val bytes = encodePayload(System.currentTimeMillis(), text)
-        return sendMessageSuspend(bytes)
-    }
-
     suspend fun sendMessageSuspend(bytes: ByteArray, targetDevice: BluetoothDevice? = null): Boolean = gattWriteMutex.withLock {
+        isSending = true
         try {
+            if (targetDevice == null) {
+                Log.e(TAG, "sendMessageSuspend: targetDevice is null, cannot send")
+                return@withLock false
+            }
             var payload: ByteArray
             try {
                 val fastCompressor = LZ4Factory.fastestInstance().fastCompressor()
@@ -1395,8 +1532,8 @@ class BluetoothHandler(private val context: Context) {
                 }
             }
 
-            val targetAddress = targetDevice?.address ?: getConnectedDeviceAddress()
-            val deviceMtu = if (targetAddress != null) deviceMtus[targetAddress] ?: 23 else 23
+            val targetAddress = targetDevice.address
+            val deviceMtu = deviceMtus[targetAddress] ?: 23
             val maxPayloadSize = java.lang.Math.min(deviceMtu - 6, 509) // GATT attribute value is capped at 512 bytes, overhead is 3 bytes BLE + 3 bytes chunk header
             val rawChunks = payload.toList().chunked(maxPayloadSize).map { it.toByteArray() }
             val totalChunks = rawChunks.size
@@ -1411,6 +1548,7 @@ class BluetoothHandler(private val context: Context) {
 
             val success = sendChunksInternal(chunks, targetDevice)
             if (success) {
+                delay(80) // Settling delay: let BLE stack process before releasing mutex
                 val text = decodePayload(bytes)?.second ?: String(bytes, Charsets.UTF_8)
                 _messages.tryEmit(ChatMessage(text, isFromMe = true, timestamp = System.currentTimeMillis()))
             }
@@ -1418,10 +1556,10 @@ class BluetoothHandler(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Exception in sendMessageSuspend", e)
             false
+        } finally {
+            isSending = false
         }
     }
-
-    suspend fun sendMessage(bytes: ByteArray, targetDevice: BluetoothDevice? = null): Boolean = sendMessageSuspend(bytes, targetDevice)
 
     suspend fun sendAck(timestamp: Long, targetDevice: BluetoothDevice? = null): Boolean = gattWriteMutex.withLock {
         try {
@@ -1445,6 +1583,10 @@ class BluetoothHandler(private val context: Context) {
     suspend fun sendPublicKey(myUuidStr: String, publicKeyBytes: ByteArray, targetDevice: BluetoothDevice? = null): Boolean = gattWriteMutex.withLock {
         try {
             val uuid = try { UUID.fromString(myUuidStr) } catch(e: Exception) { return@withLock false }
+            if (targetDevice == null) {
+                Log.e(TAG, "sendPublicKey: targetDevice is null, cannot send")
+                return@withLock false
+            }
             val payload = ByteArray(publicKeyBytes.size + 17).apply {
                 this[0] = 2
                 this[1] = 0
@@ -1452,8 +1594,8 @@ class BluetoothHandler(private val context: Context) {
                 System.arraycopy(publicKeyBytes, 0, this, 17, publicKeyBytes.size)
             }
 
-            val targetAddress = targetDevice?.address ?: getConnectedDeviceAddress()
-            val deviceMtu = if (targetAddress != null) deviceMtus[targetAddress] ?: 23 else 23
+            val targetAddress = targetDevice.address
+            val deviceMtu = deviceMtus[targetAddress] ?: 23
             val maxPayloadSize = java.lang.Math.min(deviceMtu - 6, 509) // GATT attribute value is capped at 512 bytes, overhead is 3 bytes BLE + 3 bytes chunk header
             val rawChunks = payload.toList().chunked(maxPayloadSize).map { it.toByteArray() }
             val totalChunks = rawChunks.size
@@ -1473,31 +1615,39 @@ class BluetoothHandler(private val context: Context) {
         }
     }
 
-    suspend fun sendMessageEncrypted(ciphertext: ByteArray, messageId: Int, targetDevice: BluetoothDevice? = null): Boolean {
-        val payload = ByteArray(ciphertext.size + 6).apply {
-            this[0] = 1
-            this[1] = 2
-            val encryptedMessageId = messageId or java.lang.Integer.MIN_VALUE
-            val idBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(encryptedMessageId).array()
-            System.arraycopy(idBytes, 0, this, 2, 4)
-            System.arraycopy(ciphertext, 0, this, 6, ciphertext.size)
-        }
-        // Reuse the serialized send path
-        return sendMessage(payload, targetDevice)
-    }
-
-    fun isClient(): Boolean = bluetoothGatt != null
+    fun isClient(): Boolean = clientConnections.isNotEmpty()
 
     fun getConnectedDeviceByAddress(address: String): BluetoothDevice? {
         synchronized(connectedClients) {
             connectedClients.find { it.address == address }?.let { return it }
         }
-        val gattDevice = bluetoothGatt?.device
-        if (gattDevice?.address == address) return gattDevice
+        clientConnections[address]?.let { return it.gatt.device }
         return null
     }
 
+    fun getDeviceByUuid(uuid: String): BluetoothDevice? {
+        val peer = _discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, uuid) }
+        if (peer != null) {
+            return peer.device ?: getConnectedDeviceByAddress(peer.address)
+        }
+        val serverAddress = uuidToServerAddress.entries.firstOrNull { com.example.bluemesh.utils.uuidsMatch(it.key, uuid) }?.value
+        if (serverAddress != null) {
+            return getConnectedDeviceByAddress(serverAddress)
+        }
+        return null
+    }
+
+    fun getUuidByAddress(deviceAddress: String): String? {
+        return uuidToServerAddress.entries.firstOrNull { it.value == deviceAddress }?.key
+    }
+
     fun updatePeerUuid(fullUuid: String, deviceAddress: String) {
+        uuidToServerAddress[fullUuid] = deviceAddress
+        uuidToServerAddress.keys.toList().forEach { key ->
+            if (key != fullUuid && com.example.bluemesh.utils.uuidsMatch(key, fullUuid)) {
+                uuidToServerAddress.remove(key)
+            }
+        }
         _discoveredPeers.update { current ->
             var found = false
             val updated = current.map { peer ->
@@ -1526,19 +1676,4 @@ class BluetoothHandler(private val context: Context) {
     }
 
     private fun ByteArray.toHexString(): String = joinToString("") { "%02x".format(it) }
-
-    fun cleanUp() {
-        stopScanning()
-        stopAdvertising()
-        disconnect()
-        stopGattServer()
-        if (isReceiverRegistered) {
-            try {
-                context.unregisterReceiver(bluetoothStateReceiver)
-                isReceiverRegistered = false
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to unregister bluetooth state receiver", e)
-            }
-        }
-    }
 }

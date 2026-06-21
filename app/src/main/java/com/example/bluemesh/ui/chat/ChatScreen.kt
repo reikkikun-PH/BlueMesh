@@ -31,8 +31,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.example.bluemesh.data.models.ConnectionStatus
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import com.example.bluemesh.ui.AccessibilityState
+import com.example.bluemesh.ui.LocalAccessibility
 
 @Composable
 fun ChatScreen(
@@ -50,6 +50,7 @@ fun ChatScreen(
     val isReady by viewModel.isReady.collectAsStateWithLifecycle()
 
     val repository = remember { DefaultDataRepository.getInstance(context) }
+    val accessibility = LocalAccessibility.current
     val discoveredPeers by repository.discoveredPeers.collectAsStateWithLifecycle()
     val isOfficial = remember(discoveredPeers, peerUuid) {
         discoveredPeers.find {
@@ -63,8 +64,6 @@ fun ChatScreen(
     var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    var isSending by remember { mutableStateOf(false) }
-    val coroutineScope = rememberCoroutineScope()
 
     val lifecycleOwner = LocalLifecycleOwner.current
     val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
@@ -117,6 +116,8 @@ fun ChatScreen(
                 .fillMaxSize()
                 .imePadding()
         ) {
+            val showDeleteConfirm = remember { mutableStateOf(false) }
+
             // Header Row
             Row(
                 modifier = Modifier
@@ -140,8 +141,8 @@ fun ChatScreen(
                         Text(
                             text = peerName,
                             color = Color.White,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
+                            fontSize = accessibility.headerFontSize,
+                            fontWeight = accessibility.headerFontWeight,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false)
@@ -167,7 +168,7 @@ fun ChatScreen(
                     Text(
                         text = statusText,
                         color = statusColor,
-                        fontSize = 13.sp,
+                        fontSize = accessibility.subtitleFontSize,
                         fontWeight = FontWeight.Medium
                     )
                 }
@@ -175,9 +176,7 @@ fun ChatScreen(
                 Spacer(modifier = Modifier.weight(1f))
 
                 IconButton(
-                    onClick = {
-                        viewModel.clearChatHistory()
-                    },
+                    onClick = { showDeleteConfirm.value = true },
                     colors = IconButtonDefaults.iconButtonColors(contentColor = Color(0xFFEF4444))
                 ) {
                     Icon(
@@ -186,6 +185,32 @@ fun ChatScreen(
                         modifier = Modifier.size(24.dp)
                     )
                 }
+            }
+
+            if (showDeleteConfirm.value) {
+                AlertDialog(
+                    onDismissRequest = { showDeleteConfirm.value = false },
+                    title = {
+                        Text("Delete Chat History", color = Color.White)
+                    },
+                    text = {
+                        Text("Are you sure you want to delete all chat history with this contact? This cannot be undone.", color = Color(0xFF94A3B8))
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showDeleteConfirm.value = false
+                            viewModel.clearChatHistory()
+                        }) {
+                            Text("Delete", color = Color(0xFFEF4444))
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showDeleteConfirm.value = false }) {
+                            Text("Cancel", color = Color(0xFF94A3B8))
+                        }
+                    },
+                    containerColor = Color(0xFF1D263B)
+                )
             }
 
             HorizontalDivider(color = Color(0xFF1E293B), thickness = 1.dp)
@@ -200,7 +225,7 @@ fun ChatScreen(
                     .fillMaxWidth()
             ) {
                 items(messages) { message ->
-                    ChatBubble(message = message)
+                    ChatBubble(message = message, accessibility = accessibility)
                 }
             }
 
@@ -210,7 +235,7 @@ fun ChatScreen(
                     Text(
                         text = "${textInput.length}/300",
                         color = if (textInput.length == 300) Color(0xFFEF4444) else Color(0xFF3B82F6),
-                        fontSize = 11.sp,
+                        fontSize = accessibility.captionFontSize,
                         modifier = Modifier.align(Alignment.End).padding(end = 64.dp, bottom = 2.dp)
                     )
                 }
@@ -245,35 +270,22 @@ fun ChatScreen(
 
                 IconButton(
                     onClick = {
-                        if (textInput.isNotBlank() && !isSending) {
+                        if (textInput.isNotBlank()) {
                             val messageText = textInput.trim()
                             textInput = ""
-                            isSending = true
                             viewModel.sendMessage(messageText)
-                            coroutineScope.launch {
-                                delay(600) // 600ms cooldown to match BLE transmission rate
-                                isSending = false
-                            }
                         }
                     },
-                    enabled = textInput.isNotBlank() && !isSending,
+                    enabled = textInput.isNotBlank(),
                     colors = IconButtonDefaults.iconButtonColors(
-                        containerColor = if (textInput.isNotBlank() && !isSending) Color(0xFF3B82F6) else Color(0xFF1D263B),
+                        containerColor = if (textInput.isNotBlank()) Color(0xFF3B82F6) else Color(0xFF1D263B),
                         contentColor = Color.White,
                         disabledContainerColor = Color(0xFF1D263B),
                         disabledContentColor = Color(0xFF475569)
                     ),
                     modifier = Modifier.size(48.dp)
                 ) {
-                    if (isSending) {
-                        CircularProgressIndicator(
-                            color = Color.White,
-                            strokeWidth = 2.dp,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    } else {
-                        Icon(imageVector = Icons.Default.Send, contentDescription = "Send")
-                    }
+                    Icon(imageVector = Icons.Default.Send, contentDescription = "Send")
                 }
             }
         }
@@ -282,7 +294,10 @@ fun ChatScreen(
 }
 
 @Composable
-fun ChatBubble(message: ChatMessage) {
+fun ChatBubble(
+    message: ChatMessage,
+    accessibility: AccessibilityState = AccessibilityState()
+) {
     val alignment = if (message.isFromMe) Alignment.CenterEnd else Alignment.CenterStart
     val bubbleColor = if (message.isFromMe) {
         Brush.linearGradient(colors = listOf(Color(0xFF6366F1), Color(0xFF3B82F6)))
@@ -312,8 +327,9 @@ fun ChatBubble(message: ChatMessage) {
             Text(
                 text = message.text,
                 color = textColor,
-                fontSize = 15.sp,
-                lineHeight = 20.sp
+                fontSize = accessibility.messageFontSize,
+                lineHeight = accessibility.messageFontSize * 1.3f,
+                fontWeight = accessibility.fontWeight
             )
             if (message.isFromMe) {
                 Spacer(modifier = Modifier.height(2.dp))

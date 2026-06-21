@@ -16,6 +16,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
 import java.util.UUID
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class DefaultDataRepository private constructor(private val context: Context) : DataRepository {
 
@@ -52,13 +54,39 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         val text: String,
         val timestamp: Long,
         val isPending: Boolean = false,
-        val dbMessageId: Int = -1
+        val dbMessageId: Int = -1,
+        val retryCount: Int = 0
     )
     private val sendQueue = Channel<SendRequest>(Channel.BUFFERED)
 
     private data class ProcessedMessageEntry(val senderUuid: String, val timestamp: Long)
+    private val pendingAcks = java.util.concurrent.ConcurrentHashMap<Long, CompletableDeferred<Boolean>>()
     private val processedMessagesCache = java.util.Collections.synchronizedList(mutableListOf<ProcessedMessageEntry>())
     private val PROCESSED_CACHE_MAX_SIZE = 200
+
+    private fun encryptPayload(timestamp: Long, text: String, sessionKey: ByteArray, messageId: Int): ByteArray {
+        val rawPayload = BluetoothHandler.encodePayload(timestamp, text)
+        val ciphertext = CryptoUtils.encryptAESGCM(rawPayload, sessionKey)
+        val encryptedId = messageId or java.lang.Integer.MIN_VALUE
+        val idBytes = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.BIG_ENDIAN).putInt(encryptedId).array()
+        return ByteArray(ciphertext.size + 6).apply {
+            this[0] = 1
+            this[1] = 2
+            System.arraycopy(idBytes, 0, this, 2, 4)
+            System.arraycopy(ciphertext, 0, this, 6, ciphertext.size)
+        }
+    }
+
+    private fun markMessageSent(timestamp: Long) {
+        scope.launch(Dispatchers.IO) {
+            try { dbHelper.markMessageAsSent(timestamp) } catch (e: Exception) { Log.e("DataRepository", "Error marking msg sent in DB", e) }
+        }
+        _chatMessages.update { current ->
+            current.map { msg ->
+                if (msg.isFromMe && msg.timestamp == timestamp && msg.status != "SENT") msg.copy(status = "SENT") else msg
+            }
+        }
+    }
 
     private suspend fun isDuplicateMessage(senderUuid: String, timestamp: Long): Boolean = withContext(Dispatchers.IO) {
         if (isPasscodeEnabled()) {
@@ -111,25 +139,11 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             }
         }
 
-        // Collect ACKs from peer and mark messages as SENT
         scope.launch(Dispatchers.IO) {
             try {
                 bluetoothHandler.acks.collect { ackTimestamp ->
-                    try {
-                        dbHelper.markMessageAsSent(ackTimestamp)
-                    } catch (e: Exception) {
-                        Log.e("DataRepository", "Error updating ACK status in DB", e)
-                    }
-
-                    _chatMessages.update { current ->
-                        current.map { msg ->
-                            if (msg.isFromMe && msg.timestamp == ackTimestamp && msg.status != "SENT") {
-                                msg.copy(status = "SENT")
-                            } else {
-                                msg
-                            }
-                        }
-                    }
+                    markMessageSent(ackTimestamp)
+                    pendingAcks.remove(ackTimestamp)?.let { it.complete(true) }
                 }
             } catch (e: Exception) {
                 Log.e("DataRepository", "Error in acks collector flow", e)
@@ -137,31 +151,44 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         }
 
 
-        // Connection healing checker: monitors for stuck PENDING messages and resets hung connections
         scope.launch(Dispatchers.IO) {
+            val peerReadyStates = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
             while (true) {
                 try {
                     delay(5000)
+                    val now = System.currentTimeMillis()
                     val currentChat = activeChatUuid
-                    val status = _activeConnectionStatus.value
-                    if (currentChat.isNotEmpty() && (status == ConnectionStatus.CONNECTED || status == ConnectionStatus.SYNCHRONIZING)) {
-                        val now = System.currentTimeMillis()
-                        val hasStuckPendingMessage = _chatMessages.value.any { msg ->
-                            msg.isFromMe && msg.status == "PENDING" && (now - msg.timestamp > 15000)
+                    for (peer in discoveredPeers.value) {
+                        val peerUuid = peer.uuid
+                        val isReady = bluetoothHandler.isPeerReady(peerUuid)
+                        val wasReady = peerReadyStates[peerUuid]
+                        if (wasReady == true && !isReady) {
+                            Log.w("DataRepository", "Peer $peerUuid lost readiness, reconnecting.")
+                            connectToPeerByUuid(peerUuid)
                         }
-                        if (hasStuckPendingMessage) {
-                            Log.w("DataRepository", "Connection health check: message stuck in PENDING for >15s while connection is $status. Resetting connection.")
-                            bluetoothHandler.disconnect()
-                            delay(500)
-                            connectToPeerByUuid(currentChat)
+                        peerReadyStates[peerUuid] = isReady
+                    }
+                    if (currentChat.isNotEmpty()) {
+                        val hasStuckPending = _chatMessages.value.any { it.isFromMe && it.status == "PENDING" && (now - it.timestamp > 20000) }
+                        if (hasStuckPending) {
+                            val peerStatus = bluetoothHandler.getConnectionStatusForPeer(currentChat)
+                            val peerDiscovered = discoveredPeers.value.any { com.example.bluemesh.utils.uuidsMatch(it.uuid, currentChat) }
+                            if (peerStatus == ConnectionStatus.CONNECTED || peerStatus == ConnectionStatus.SYNCHRONIZING) {
+                                Log.w("DataRepository", "Stuck PENDING >20s while $peerStatus, resetting client.")
+                                bluetoothHandler.resetClientConnection()
+                                delay(500)
+                                connectToPeerByUuid(currentChat)
+                            } else if (peerStatus == ConnectionStatus.DISCONNECTED && peerDiscovered) {
+                                Log.w("DataRepository", "Stuck PENDING >20s, peer discovered but DISCONNECTED. Reconnecting.")
+                                connectToPeerByUuid(currentChat)
+                            }
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e("DataRepository", "Error in connection healing loop", e)
+                    Log.e("DataRepository", "Error in health monitor loop", e)
                 }
             }
         }
-
 
         // Message send queue consumer: processes one message at a time
         scope.launch(Dispatchers.IO) {
@@ -190,38 +217,46 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
                         if (bluetoothHandler.isPeerReady(request.activeChatUuid)) {
                             var sent = false
-                            var retryCount = 0
-                             while (!sent && retryCount < 3) {
-                                 if (retryCount > 0) delay(200)
-                                 val targetPeer = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, request.activeChatUuid) }
-                                 val targetDevice = targetPeer?.device ?: bluetoothHandler.getConnectedDeviceByAddress(targetPeer?.address ?: "")
-                                 sent = bluetoothHandler.sendMessageSuspend(request.payload, targetDevice)
-                                 retryCount++
-                             }
+                            var acked = false
+                            var innerRetryCount = 0
+                            val ackDeferred = CompletableDeferred<Boolean>()
+                            // Register the ACK deferred BEFORE sending so we never miss the ACK
+                            pendingAcks[request.timestamp] = ackDeferred
+                            while (!sent && innerRetryCount < 3) {
+                                if (innerRetryCount > 0) delay(200)
+                                val targetPeer = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, request.activeChatUuid) }
+                                val targetDevice = targetPeer?.device ?: (targetPeer?.address?.let { bluetoothHandler.getConnectedDeviceByAddress(it) } ?: bluetoothHandler.getDeviceByUuid(request.activeChatUuid))
+                                sent = bluetoothHandler.sendMessageSuspend(request.payload, targetDevice)
+                                innerRetryCount++
+                                if (sent) {
+                                    acked = withTimeoutOrNull(1000) { ackDeferred.await() } == true
+                                }
+                                if (!sent) {
+                                    delay(150)
+                                }
+                            }
+                            pendingAcks.remove(request.timestamp)
                             if (sent) {
-                                try {
-                                    dbHelper.markMessageAsSent(request.timestamp)
-                                } catch (e: Exception) {
-                                    Log.e("DataRepository", "Error updating status to SENT in DB", e)
+                                markMessageSent(request.timestamp)
+                                if (!acked) {
+                                    Log.w("DataRepository", "Message ${request.timestamp} sent but ACK not confirmed (peer may have received it)")
                                 }
-                                _chatMessages.update { current ->
-                                    current.map { msg ->
-                                        if (msg.isFromMe && msg.timestamp == request.timestamp && msg.status != "SENT") {
-                                            msg.copy(status = "SENT")
-                                        } else {
-                                            msg
-                                        }
-                                    }
-                                }
+                                delay(150) // Inter-message gap: give peer time to process before next message
                             } else {
-                                sendPendingMessages(request.activeChatUuid)
+                                Log.d("DataRepository", "Send failed for ${request.activeChatUuid}, will retry on reconnect.")
+                            }
+                        } else {
+                            Log.d("DataRepository", "Peer ${request.activeChatUuid} not ready for send. Triggering reconnect and re-queueing.")
+                            connectToPeerByUuid(request.activeChatUuid)
+                            if (request.retryCount < 15) {
+                                delay(200)
+                                sendQueue.send(request.copy(retryCount = request.retryCount + 1))
                             }
                         }
                     } catch (e: Exception) {
                         Log.e("DataRepository", "Error processing sendQueue request", e)
                     }
-                    // Small gap between messages to let BLE stack breathe
-                    delay(100)
+
                 }
             } catch (e: Exception) {
                 Log.e("DataRepository", "sendQueue coroutine failed", e)
@@ -288,6 +323,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                 if (peerUuid.isNotEmpty()) {
                     sendPendingMessages(peerUuid)
                 }
+                // Also retry pending messages for the active chat if different
+                if (activeChatUuid.isNotEmpty() && !com.example.bluemesh.utils.uuidsMatch(peerUuid, activeChatUuid)) {
+                    sendPendingMessages(activeChatUuid)
+                }
             }
         }
 
@@ -331,9 +370,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                     try {
                         if (myKeyPair == null) myKeyPair = CryptoUtils.generateECKeyPair()
                         myKeyPair?.let {
-                             if (!bluetoothHandler.isClient()) {
-                                 bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded, device)
-                             }
+                            bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded, device)
                             try {
                                 val secret = CryptoUtils.generateSharedSecret(it.private, peerPublicKeyBytes)
                                 val aesKey = CryptoUtils.deriveAESKey(secret)
@@ -380,7 +417,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             }
                             resolved ?: "mesh_${message.senderHash}"
                         } else {
-                            peer?.uuid ?: activeChatUuid
+                            peer?.uuid ?: connectedAddress?.let { bluetoothHandler.getUuidByAddress(it) } ?: "gatt_${connectedAddress ?: "unknown"}"
                         }
 
                         val textBytes = message.text.toByteArray(Charsets.ISO_8859_1)
@@ -518,57 +555,40 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             }
                         }
 
-                        if (!bluetoothHandler.isClient()) {
-                            var attemptedConnection = false
-                            // 1. High priority: reconnect to active chat uuid if discovered
-                            if (activeChatUuid.isNotEmpty() && !bluetoothHandler.isPeerConnected(activeChatUuid)) {
-                                val activePeer = peers.find { peer ->
+                        val disconnectedPeers = peers.filter { peer ->
+                            !bluetoothHandler.isPeerConnected(peer.uuid) && !bluetoothHandler.isPeerReady(peer.uuid)
+                        }
+                        if (disconnectedPeers.isNotEmpty()) {
+                            // Only auto-connect to the active chat peer to avoid tearing down
+                            // an active GATT connection on a different peer mid-send
+                            val activePeer = if (activeChatUuid.isNotEmpty()) {
+                                disconnectedPeers.firstOrNull { peer ->
                                     com.example.bluemesh.utils.uuidsMatch(activeChatUuid, peer.uuid)
                                 }
-                                if (activePeer != null) {
-                                    val lastAttempt = lastConnectionAttempts[activePeer.uuid] ?: 0L
-                                    if (System.currentTimeMillis() - lastAttempt > 5000) {
-                                        lastConnectionAttempts[activePeer.uuid] = System.currentTimeMillis()
-                                        Log.d("DataRepository", "Auto-reconnecting to active chat peer: ${activePeer.uuid}")
-                                        connectToPeerByUuid(activePeer.uuid)
-                                        attemptedConnection = true
-                                    }
+                            } else null
+                            if (activePeer != null) {
+                                val lastAttempt = lastConnectionAttempts[activePeer.uuid] ?: 0L
+                                if (System.currentTimeMillis() - lastAttempt > 5000) {
+                                    lastConnectionAttempts[activePeer.uuid] = System.currentTimeMillis()
+                                    Log.d("DataRepository", "Auto-connecting to active chat peer: ${activePeer.uuid}")
+                                    connectToPeerByUuid(activePeer.uuid)
                                 }
-                            }
-
-                            // 2. Reconnect to peers with pending messages
-                            if (!attemptedConnection) {
-                                for (peer in peers) {
-                                    if (bluetoothHandler.isPeerConnected(peer.uuid)) continue
-                                    val hasPending = try {
+                            } else if (activeChatUuid.isEmpty()) {
+                                // No active chat: try a peer with pending messages
+                                val pendingPeer = disconnectedPeers.firstOrNull { peer ->
+                                    try {
                                         dbHelper.getPendingMessages(peer.uuid).isNotEmpty()
                                     } catch (e: Exception) {
                                         Log.e("DataRepository", "Error reading pending messages", e)
                                         false
                                     }
-                                    if (hasPending) {
-                                        val lastAttempt = lastConnectionAttempts[peer.uuid] ?: 0L
-                                        if (System.currentTimeMillis() - lastAttempt > 5000) {
-                                            lastConnectionAttempts[peer.uuid] = System.currentTimeMillis()
-                                            Log.d("DataRepository", "Auto-reconnecting to peer with pending messages: ${peer.uuid}")
-                                            connectToPeerByUuid(peer.uuid)
-                                            attemptedConnection = true
-                                            break
-                                        }
-                                    }
                                 }
-                            }
-
-                            // 3. Connect to any detected peer automatically to receive messages
-                            if (!attemptedConnection) {
-                                for (peer in peers) {
-                                    if (bluetoothHandler.isPeerConnected(peer.uuid)) continue
-                                    val lastAttempt = lastConnectionAttempts[peer.uuid] ?: 0L
-                                    if (System.currentTimeMillis() - lastAttempt > 10000) {
-                                        lastConnectionAttempts[peer.uuid] = System.currentTimeMillis()
-                                        Log.d("DataRepository", "Auto-connecting to detected peer to listen for messages: ${peer.uuid}")
-                                        connectToPeerByUuid(peer.uuid)
-                                        break
+                                if (pendingPeer != null) {
+                                    val lastAttempt = lastConnectionAttempts[pendingPeer.uuid] ?: 0L
+                                    if (System.currentTimeMillis() - lastAttempt > 5000) {
+                                        lastConnectionAttempts[pendingPeer.uuid] = System.currentTimeMillis()
+                                        Log.d("DataRepository", "Auto-connecting to peer with pending: ${pendingPeer.uuid}")
+                                        connectToPeerByUuid(pendingPeer.uuid)
                                     }
                                 }
                             }
@@ -597,11 +617,8 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         val messageId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
 
         if (!bluetoothHandler.isPeerReady(activeChatUuid)) {
-            bluetoothHandler.advertiseMeshMessage(messageId, getUserUuid(), activeChatUuid, text)
-            if (_activeConnectionStatus.value == ConnectionStatus.DISCONNECTED) {
-                Log.d("DataRepository", "Peer not ready and disconnected. Triggering reconnect on send.")
-                connectToPeerByUuid(activeChatUuid)
-            }
+            Log.d("DataRepository", "Peer not ready on send. Triggering immediate reconnect.")
+            connectToPeerByUuid(activeChatUuid)
         }
 
         // Optimistically add to chat UI as PENDING, will be updated to SENT by queue consumer
@@ -616,17 +633,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
 
         val sessionKey = getSessionKeyForUuid(activeChatUuid)
         val payload = if (sessionKey != null) {
-            val rawPayload = BluetoothHandler.encodePayload(timestamp, text)
-            val ciphertext = CryptoUtils.encryptAESGCM(rawPayload, sessionKey)
-            
-            ByteArray(ciphertext.size + 6).apply {
-                this[0] = 1
-                this[1] = 2 // flags = 2
-                val encryptedMessageId = messageId or java.lang.Integer.MIN_VALUE
-                val idBytes = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.BIG_ENDIAN).putInt(encryptedMessageId).array()
-                System.arraycopy(idBytes, 0, this, 2, 4)
-                System.arraycopy(ciphertext, 0, this, 6, ciphertext.size)
-            }
+            encryptPayload(timestamp, text, sessionKey, messageId)
         } else {
             BluetoothHandler.encodePayload(timestamp, text)
         }
@@ -667,12 +674,18 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         if (activeChatUuid.isNotEmpty()) {
             scope.launch(Dispatchers.IO) {
                 try {
-                    val whereClause = if (isPasscodeEnabled()) {
-                        "contact_uuid = ?"
-                    } else {
-                        "contact_uuid = ? AND status != 'PENDING'"
+                    val db = dbHelper.writableDatabase
+                    // Resolve the canonical UUID so we delete messages stored under any UUID representation
+                    val resolvedUuid = dbHelper.resolveCanonicalUuid(activeChatUuid)
+                    db.delete("QueuedMessages", "contact_uuid = ?", arrayOf(resolvedUuid))
+                    if (resolvedUuid != activeChatUuid) {
+                        db.delete("QueuedMessages", "contact_uuid = ?", arrayOf(activeChatUuid))
                     }
-                    dbHelper.writableDatabase.delete("QueuedMessages", whereClause, arrayOf(activeChatUuid))
+                    // Also clear pending ACK tracking for this contact
+                    val timestampsToRemove = pendingAcks.keys.filter { ts ->
+                        _chatMessages.value.any { it.timestamp == ts }
+                    }
+                    timestampsToRemove.forEach { pendingAcks.remove(it) }
                 } catch (e: Exception) {
                     Log.e("DataRepository", "Error clearing chat history", e)
                 }
@@ -734,7 +747,6 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     override fun setActiveChat(uuid: String) {
         activeChatUuid = uuid
         if (uuid.isEmpty()) {
-            disconnect()
             _activeConnectionStatus.value = ConnectionStatus.DISCONNECTED
             _activeIsReady.value = false
         } else {
@@ -745,19 +757,19 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         _chatMessages.value = if (isPasscodeEnabled()) {
             dbHelper.getMessagesForContact(uuid)
         } else {
-            // In ephemeral mode, only load pending messages that are yet to be sent
             dbHelper.getMessagesForContact(uuid).filter { it.status == "PENDING" }
         }
     }
 
     override fun connectToPeerByUuid(uuid: String) {
-        bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, uuid) }?.device?.let {
-            bluetoothHandler.connectToPeer(it)
+        val device = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, uuid) }?.device
+            ?: bluetoothHandler.getDeviceByUuid(uuid)
+        if (device != null) {
+            bluetoothHandler.connectToPeer(device)
         }
     }
 
     private suspend fun sendPendingMessages(peerUuid: String) = withContext(Dispatchers.IO) {
-        delay(500)
         val canonicalUuid = dbHelper.getContactsList().find {
             com.example.bluemesh.utils.uuidsMatch(it.first, peerUuid)
         }?.first ?: peerUuid
@@ -773,17 +785,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             }
             val msgId = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
             val payload = if (sessionKey != null) {
-                val rawPayload = BluetoothHandler.encodePayload(msg.third, msg.second)
-                val ciphertext = CryptoUtils.encryptAESGCM(rawPayload, sessionKey)
-                
-                ByteArray(ciphertext.size + 6).apply {
-                    this[0] = 1
-                    this[1] = 2 // flags = 2
-                    val encryptedMessageId = msgId or java.lang.Integer.MIN_VALUE
-                    val idBytes = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.BIG_ENDIAN).putInt(encryptedMessageId).array()
-                    System.arraycopy(idBytes, 0, this, 2, 4)
-                    System.arraycopy(ciphertext, 0, this, 6, ciphertext.size)
-                }
+                encryptPayload(msg.third, msg.second, sessionKey, msgId)
             } else {
                 BluetoothHandler.encodePayload(msg.third, msg.second)
             }
@@ -904,6 +906,11 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             }
         }
     }
+
+    override fun isBoldTextEnabled(): Boolean = prefs.getBoolean("bold_text_enabled", false)
+    override fun setBoldTextEnabled(enabled: Boolean) { prefs.edit().putBoolean("bold_text_enabled", enabled).apply() }
+    override fun getFontSizeLevel(): Int = prefs.getInt("font_size_level", 2)
+    override fun setFontSizeLevel(level: Int) { prefs.edit().putInt("font_size_level", level.coerceIn(1, 7)).apply() }
 
     override fun isDiscoverableEnabled(): Boolean = prefs.getBoolean("is_discoverable_enabled", true)
 

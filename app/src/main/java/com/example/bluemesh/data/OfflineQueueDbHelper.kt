@@ -93,7 +93,7 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
         return db.insert("QueuedMessages", null, values)
     }
 
-    private fun resolveCanonicalUuid(contactUuid: String): String {
+    fun resolveCanonicalUuid(contactUuid: String): String {
         val contacts = getContactsList()
         val match = contacts.find {
             com.example.bluemesh.utils.uuidsMatch(it.first, contactUuid)

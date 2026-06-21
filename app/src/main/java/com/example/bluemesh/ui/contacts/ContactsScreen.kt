@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluemesh.data.DefaultDataRepository
 import com.example.bluemesh.data.models.BluetoothPeer
+import com.example.bluemesh.ui.LocalAccessibility
 
 @Composable
 fun ContactsScreen(
@@ -36,6 +37,7 @@ fun ContactsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val accessibility = LocalAccessibility.current
     val repository = remember { DefaultDataRepository.getInstance(context.applicationContext) }
     val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
 
@@ -81,8 +83,8 @@ fun ContactsScreen(
                 Text(
                     text = "Passcode Lock Required",
                     color = Color.White,
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold,
+                    fontSize = accessibility.headerFontSize,
+                    fontWeight = accessibility.headerFontWeight,
                     textAlign = TextAlign.Center
                 )
 
@@ -92,9 +94,9 @@ fun ContactsScreen(
                     text = "To protect your contact lists and offline queue history, you must enable a Passcode lock in Security Settings.",
                     modifier = Modifier.padding(horizontal = 16.dp),
                     color = Color(0xFF94A3B8),
-                    fontSize = 14.sp,
+                    fontSize = accessibility.bodyFontSize,
                     textAlign = TextAlign.Center,
-                    lineHeight = 22.sp
+                    lineHeight = accessibility.bodyFontSize * 1.5f
                 )
 
                 Spacer(modifier = Modifier.height(32.dp))
@@ -153,8 +155,8 @@ fun ContactsScreen(
                     Text(
                         text = "Contacts",
                         color = Color.White,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold
+                        fontSize = accessibility.headerFontSize,
+                        fontWeight = accessibility.headerFontWeight
                     )
                 }
 
@@ -170,9 +172,9 @@ fun ContactsScreen(
                         Text(
                             text = "No saved contacts yet.\nSave nearby peers as contacts from the main screen list.",
                             color = Color(0xFF64748B),
-                            fontSize = 15.sp,
+                            fontSize = accessibility.bodyFontSize,
                             textAlign = TextAlign.Center,
-                            lineHeight = 22.sp
+                            lineHeight = accessibility.bodyFontSize * 1.5f
                         )
                     }
                 } else {
@@ -216,8 +218,8 @@ fun ContactsScreen(
                                             Text(
                                                 text = contact.name,
                                                 color = Color.White,
-                                                fontSize = 16.sp,
-                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = accessibility.bodyFontSize,
+                                                fontWeight = accessibility.bodyFontWeight,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                                 modifier = Modifier.weight(1f, fill = false)
@@ -235,7 +237,7 @@ fun ContactsScreen(
                                         Text(
                                             text = if (isOnline) "Active / In Range" else "Offline / Out of Range",
                                             color = if (isOnline) Color(0xFF10B981) else Color(0xFF64748B),
-                                            fontSize = 12.sp
+                                            fontSize = accessibility.captionFontSize
                                         )
                                     }
 

@@ -47,4 +47,9 @@ interface DataRepository {
     fun isDiscoverableEnabled(): Boolean
     fun setDiscoverableEnabled(enabled: Boolean)
     fun resetUserUuid(passcode: String): Boolean
+
+    fun isBoldTextEnabled(): Boolean
+    fun setBoldTextEnabled(enabled: Boolean)
+    fun getFontSizeLevel(): Int
+    fun setFontSizeLevel(level: Int)
 }

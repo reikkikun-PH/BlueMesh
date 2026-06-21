@@ -32,6 +32,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.bluemesh.data.DefaultDataRepository
+import com.example.bluemesh.ui.AccessibilityState
+import com.example.bluemesh.ui.LocalAccessibility
 import kotlinx.coroutines.delay
 
 @Composable
@@ -42,6 +44,7 @@ fun LockScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val accessibility = LocalAccessibility.current
     val repository = remember { DefaultDataRepository.getInstance(context) }
     
     var pinInput by remember { mutableStateOf("") }
@@ -198,8 +201,8 @@ fun LockScreen(
                 Text(
                     text = titleText,
                     color = Color.White,
-                    fontSize = 26.sp,
-                    fontWeight = FontWeight.Bold,
+                    fontSize = accessibility.headerFontSize,
+                    fontWeight = accessibility.headerFontWeight,
                     textAlign = TextAlign.Center
                 )
 
@@ -209,7 +212,7 @@ fun LockScreen(
                     text = subtitleText,
                     modifier = Modifier.padding(horizontal = 24.dp),
                     color = Color(0xFF94A3B8),
-                    fontSize = 14.sp,
+                    fontSize = accessibility.bodyFontSize,
                     textAlign = TextAlign.Center
                 )
             }
@@ -250,7 +253,7 @@ fun LockScreen(
                         text = errorMessage,
                         modifier = Modifier.padding(vertical = 16.dp),
                         color = Color(0xFFEF4444),
-                        fontSize = 14.sp,
+                        fontSize = accessibility.bodyFontSize,
                         fontWeight = FontWeight.Medium,
                         textAlign = TextAlign.Center
                     )
@@ -283,7 +286,8 @@ fun LockScreen(
                             ) {
                                 KeypadButton(
                                     text = digit,
-                                    onClick = { onDigitClick(digit) }
+                                    onClick = { onDigitClick(digit) },
+                                    accessibility = accessibility
                                 )
                             }
                         }
@@ -322,7 +326,8 @@ fun LockScreen(
                     ) {
                         KeypadButton(
                             text = "0",
-                            onClick = { onDigitClick("0") }
+                            onClick = { onDigitClick("0") },
+                            accessibility = accessibility
                         )
                     }
 
@@ -359,6 +364,7 @@ fun LockScreen(
 fun KeypadButton(
     text: String,
     onClick: () -> Unit,
+    accessibility: AccessibilityState = AccessibilityState(),
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -377,8 +383,8 @@ fun KeypadButton(
         Text(
             text = text,
             color = Color.White,
-            fontSize = 28.sp,
-            fontWeight = FontWeight.SemiBold
+            fontSize = accessibility.headerFontSize,
+            fontWeight = accessibility.bodyFontWeight
         )
     }
 }

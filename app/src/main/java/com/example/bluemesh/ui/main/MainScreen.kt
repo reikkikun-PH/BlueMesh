@@ -31,9 +31,12 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation3.runtime.NavKey
 import com.example.bluemesh.Chat
 import com.example.bluemesh.ContactsList
+import com.example.bluemesh.AccessibilitySettings
 import com.example.bluemesh.SecuritySettings
 import com.example.bluemesh.data.DefaultDataRepository
 import com.example.bluemesh.data.models.BluetoothPeer
+import com.example.bluemesh.ui.AccessibilityState
+import com.example.bluemesh.ui.LocalAccessibility
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -44,6 +47,7 @@ fun MainScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val accessibility = LocalAccessibility.current
     val repository = remember { DefaultDataRepository.getInstance(context.applicationContext) }
     
     val viewModel: MainScreenViewModel = viewModel {
@@ -92,8 +96,8 @@ fun MainScreen(
                 Text(
                     text = "BlueMesh Settings",
                     color = Color.White,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
+                    fontSize = accessibility.headerFontSize,
+                    fontWeight = accessibility.headerFontWeight,
                     modifier = Modifier.padding(16.dp)
                 )
                 HorizontalDivider(color = Color(0xFF334155))
@@ -132,6 +136,26 @@ fun MainScreen(
                     onClick = {
                         scope.launch { drawerState.close() }
                         onItemClick(SecuritySettings)
+                    },
+                    colors = NavigationDrawerItemDefaults.colors(
+                        unselectedContainerColor = Color.Transparent
+                    ),
+                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                )
+
+                NavigationDrawerItem(
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Default.TextFields,
+                            contentDescription = "Accessibility",
+                            tint = Color(0xFF8B5CF6)
+                        )
+                    },
+                    label = { Text("Accessibility", color = Color.White) },
+                    selected = false,
+                    onClick = {
+                        scope.launch { drawerState.close() }
+                        onItemClick(AccessibilitySettings)
                     },
                     colors = NavigationDrawerItemDefaults.colors(
                         unselectedContainerColor = Color.Transparent
@@ -194,8 +218,8 @@ fun MainScreen(
 
                     Text(
                         text = "BlueMesh",
-                        fontSize = 28.sp,
-                        fontWeight = FontWeight.Black,
+                        fontSize = accessibility.headerFontSize * 1.4f,
+                        fontWeight = accessibility.headerFontWeight,
                         style = TextStyle(
                             brush = Brush.linearGradient(
                                 colors = listOf(Color(0xFF8B5CF6), Color(0xFF3B82F6))
@@ -230,14 +254,14 @@ fun MainScreen(
                             Text(
                                 text = "Chat Profile",
                                 color = Color(0xFF94A3B8),
-                                fontSize = 12.sp,
+                                fontSize = accessibility.captionFontSize,
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
                                 text = viewModel.displayName,
                                 color = Color.White,
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold
+                                fontSize = accessibility.bodyFontSize,
+                                fontWeight = accessibility.bodyFontWeight
                             )
                         }
 
@@ -269,13 +293,13 @@ fun MainScreen(
                             Text(
                                 text = "Make Discoverable",
                                 color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.SemiBold
+                                fontSize = accessibility.bodyFontSize,
+                                fontWeight = accessibility.bodyFontWeight
                             )
                             Text(
                                 text = if (isDiscoverable) "Broadcasting display name offline" else "Invisible to nearby peers",
                                 color = Color(0xFF94A3B8),
-                                fontSize = 12.sp
+                                fontSize = accessibility.captionFontSize
                             )
                         }
 
@@ -305,8 +329,8 @@ fun MainScreen(
                     Text(
                         text = "Nearby Peers",
                         color = Color.White,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
+                        fontSize = accessibility.bodyFontSize * 1.1f,
+                        fontWeight = accessibility.headerFontWeight,
                         modifier = Modifier.weight(1f)
                     )
 
@@ -332,9 +356,9 @@ fun MainScreen(
                         Text(
                             text = "Searching for nearby BlueMesh users...\nEnsure Bluetooth is active on both devices.",
                             color = Color(0xFF64748B),
-                            fontSize = 14.sp,
+                            fontSize = accessibility.bodyFontSize,
                             textAlign = TextAlign.Center,
-                            lineHeight = 20.sp
+                            lineHeight = accessibility.bodyFontSize * 1.5f
                         )
                     }
                 } else {
@@ -348,6 +372,7 @@ fun MainScreen(
                             
                             PeerItem(
                                 peer = peer,
+                                accessibility = accessibility,
                                 isPasscodeEnabled = isPasscodeEnabled,
                                 isContact = isContactState,
                                 onSaveClick = {
@@ -369,6 +394,7 @@ fun MainScreen(
 @Composable
 fun PeerItem(
     peer: BluetoothPeer,
+    accessibility: AccessibilityState = AccessibilityState(),
     isPasscodeEnabled: Boolean,
     isContact: Boolean,
     onSaveClick: () -> Unit,
@@ -393,8 +419,8 @@ fun PeerItem(
                     Text(
                         text = peer.name,
                         color = Color.White,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
+                        fontSize = accessibility.bodyFontSize,
+                        fontWeight = accessibility.bodyFontWeight,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
@@ -412,7 +438,7 @@ fun PeerItem(
                 Text(
                     text = peer.uuid.ifEmpty { peer.address },
                     color = Color(0xFF64748B),
-                    fontSize = 13.sp
+                    fontSize = accessibility.captionFontSize
                 )
                 if (peer.rssi != -100 && peer.allowTracking) {
                     val dist = peer.estimatedDistance
@@ -420,8 +446,8 @@ fun PeerItem(
                     Text(
                         text = "$distFormatted (Signal: ${peer.rssi} dBm)",
                         color = Color(0xFF3B82F6),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
+                        fontSize = accessibility.captionFontSize,
+                        fontWeight = accessibility.bodyFontWeight
                     )
                 }
             }
