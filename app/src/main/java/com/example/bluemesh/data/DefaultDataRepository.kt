@@ -275,18 +275,6 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         }
 
                         val messageId = (request.timestamp and 0x7FFFFFFFL).toInt()
-                        val shouldMeshAdvertise = { text: String ->
-                            if (text.isNotEmpty()) {
-                                scope.launch(Dispatchers.Default) {
-                                    try {
-                                        bluetoothHandler.advertiseMeshMessage(messageId, getUserUuid(), request.activeChatUuid, text)
-                                    } catch (e: Exception) {
-                                        Log.e("DataRepository", "Error advertising mesh message", e)
-                                    }
-                                }
-                            }
-                        }
-
                         if (bluetoothHandler.isPeerReady(request.activeChatUuid)) {
                             var sent = false
                             var acked = false
@@ -301,30 +289,30 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                                 sent = bluetoothHandler.sendMessageSuspend(request.payload, targetDevice)
                                 innerRetryCount++
                                 if (sent) {
-                                    acked = withTimeoutOrNull(1000) { ackDeferred.await() } == true
+                                    acked = withTimeoutOrNull(2000) { ackDeferred.await() } == true
                                 }
                                 if (!sent) {
                                     delay(150)
                                 }
                             }
                             pendingAcks.remove(request.timestamp)
-                            if (sent) {
+                            if (sent && acked) {
                                 markMessageSent(request.timestamp)
                                 bluetoothHandler.cancelMeshAdvertise() // Cancel any active mesh ad
-                                delay(80) // Inter-message gap: give peer time to process before next message
+                                delay(80) // Inter-message gap
                             } else {
-                                shouldMeshAdvertise(request.text) // GATT failed, try mesh relay fallback
-                                Log.d("DataRepository", "Send failed for ${request.activeChatUuid}, will retry on reconnect.")
+                                Log.d("DataRepository", "GATT write failed or E2EE ACK timeout (acked=$acked) for ${request.activeChatUuid}, retrying.")
+                                connectToPeerByUuid(request.activeChatUuid)
+                                if (request.retryCount < 20) {
+                                    delay(500)
+                                    sendQueue.send(request.copy(retryCount = request.retryCount + 1))
+                                }
                             }
                         } else {
-                            // Only mesh-broadcast once (first retry), not on every retry — prevents duplicate ads
-                            if (request.retryCount == 0) {
-                                shouldMeshAdvertise(request.text)
-                                Log.d("DataRepository", "Peer ${request.activeChatUuid} not ready, broadcasting first mesh ad.")
-                            }
+                            Log.d("DataRepository", "Peer ${request.activeChatUuid} not ready, attempting reconnect and retrying queue (retry=${request.retryCount}).")
                             connectToPeerByUuid(request.activeChatUuid)
-                            if (request.retryCount < 15) {
-                                delay(200)
+                            if (request.retryCount < 20) {
+                                delay(500)
                                 sendQueue.send(request.copy(retryCount = request.retryCount + 1))
                             }
                         }
