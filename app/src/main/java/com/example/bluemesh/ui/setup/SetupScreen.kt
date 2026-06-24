@@ -16,6 +16,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.bluemesh.theme.LocalBlueMeshColors
+import com.example.bluemesh.ui.LocalAccessibility
 
 @Composable
 fun SetupScreen(
@@ -23,15 +25,17 @@ fun SetupScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val accessibility = LocalAccessibility.current
     val repository = remember { com.example.bluemesh.data.DefaultDataRepository.getInstance(context.applicationContext) }
     val prefs = remember { context.getSharedPreferences("bluemesh_prefs", Context.MODE_PRIVATE) }
     var nameInput by remember { mutableStateOf(prefs.getString("display_name", "") ?: "") }
     var showError by remember { mutableStateOf(false) }
+    val colors = LocalBlueMeshColors.current
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0F172A)) // Slate Navy
+            .background(colors.background) // Slate Navy
             .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime))
             .padding(24.dp),
         contentAlignment = Alignment.Center
@@ -45,8 +49,8 @@ fun SetupScreen(
         ) {
             Text(
                 text = "BlueMesh",
-                fontSize = 36.sp,
-                fontWeight = FontWeight.Black,
+                fontSize = accessibility.headerFontSize * 1.5f,
+                fontWeight = accessibility.headerFontWeight,
                 style = TextStyle(
                     brush = Brush.linearGradient(
                         colors = listOf(Color(0xFF8B5CF6), Color(0xFF3B82F6))
@@ -59,8 +63,8 @@ fun SetupScreen(
 
             Text(
                 text = "Offline Peer-to-Peer Chat",
-                color = Color(0xFF94A3B8),
-                fontSize = 16.sp,
+                color = colors.textSecondary,
+                fontSize = accessibility.bodyFontSize,
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center
             )
@@ -69,9 +73,9 @@ fun SetupScreen(
 
             Text(
                 text = "Choose your display name",
-                color = Color.White,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.SemiBold,
+                color = colors.onSurface,
+                fontSize = accessibility.bodyFontSize * 1.1f,
+                fontWeight = accessibility.bodyFontWeight,
                 textAlign = TextAlign.Center
             )
 
@@ -80,20 +84,22 @@ fun SetupScreen(
             OutlinedTextField(
                 value = nameInput,
                 onValueChange = {
-                    nameInput = it
-                    if (it.isNotBlank()) showError = false
+                    if (it.length <= 30) {
+                        nameInput = it
+                        if (it.isNotBlank()) showError = false
+                    }
                 },
-                placeholder = { Text("Enter display name...", color = Color(0xFF64748B)) },
+                placeholder = { Text("Enter display name...", color = colors.textTertiary) },
                 singleLine = true,
                 shape = RoundedCornerShape(12.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedBorderColor = Color(0xFF3B82F6),
-                    unfocusedBorderColor = Color(0xFF334155),
-                    focusedContainerColor = Color(0xFF1E293B),
-                    unfocusedContainerColor = Color(0xFF1E293B),
-                    cursorColor = Color(0xFF3B82F6)
+                    focusedTextColor = colors.onSurface,
+                    unfocusedTextColor = colors.onSurface,
+                    focusedBorderColor = colors.primary,
+                    unfocusedBorderColor = colors.divider,
+                    focusedContainerColor = colors.surfaceVariant,
+                    unfocusedContainerColor = colors.surfaceVariant,
+                    cursorColor = colors.primary
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -105,7 +111,7 @@ fun SetupScreen(
                 Text(
                     text = "Name cannot be blank",
                     color = MaterialTheme.colorScheme.error,
-                    fontSize = 14.sp,
+                    fontSize = accessibility.captionFontSize,
                     modifier = Modifier.align(Alignment.Start)
                 )
             }
@@ -141,9 +147,9 @@ fun SetupScreen(
                 ) {
                     Text(
                         text = "Save and Continue",
-                        color = Color.White,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
+                        color = colors.onSurface,
+                        fontSize = accessibility.bodyFontSize,
+                        fontWeight = accessibility.bodyFontWeight
                     )
                 }
             }

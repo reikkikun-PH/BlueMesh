@@ -7,7 +7,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -23,11 +22,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.Refresh
 import com.example.bluemesh.data.DefaultDataRepository
-import androidx.compose.runtime.DisposableEffect
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.Lifecycle
+import com.example.bluemesh.theme.LocalBlueMeshColors
+import com.example.bluemesh.ui.LocalAccessibility
 
 @Composable
 fun SecurityScreen(
@@ -36,27 +34,16 @@ fun SecurityScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val accessibility = LocalAccessibility.current
     val repository = remember { DefaultDataRepository.getInstance(context.applicationContext) }
-    var isPasscodeEnabled by remember { mutableStateOf(repository.isPasscodeEnabled()) }
     var isShareLocationEnabled by remember { mutableStateOf(repository.isShareLocationEnabled()) }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                isPasscodeEnabled = repository.isPasscodeEnabled()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
+    var showResetDialog by remember { mutableStateOf(false) }
+    val colors = LocalBlueMeshColors.current
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0E131E))
+            .background(colors.background)
             .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime))
             .padding(16.dp)
     ) {
@@ -74,7 +61,7 @@ fun SecurityScreen(
                 IconButton(
                     onClick = onBackClick,
                     colors = IconButtonDefaults.iconButtonColors(
-                        contentColor = Color.White
+                        contentColor = colors.onSurface
                     )
                 ) {
                     Icon(
@@ -85,9 +72,9 @@ fun SecurityScreen(
                 Spacer(modifier = Modifier.width(16.dp))
                 Text(
                     text = "Security Settings",
-                    color = Color.White,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold
+                    color = colors.onSurface,
+                    fontSize = accessibility.headerFontSize,
+                    fontWeight = accessibility.headerFontWeight
                 )
             }
 
@@ -98,134 +85,67 @@ fun SecurityScreen(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = Color(0xFF1D263B)
+                    containerColor = colors.surface
                 )
             ) {
                 Column(
                     modifier = Modifier.padding(16.dp)
                 ) {
-                    // Passcode Lock row
+                    // Change Passcode row
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onNavigateToLock("verify_change")
+                            }
+                            .padding(vertical = 4.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
-                            modifier = Modifier.weight(1f),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
                                 modifier = Modifier
                                     .size(40.dp)
                                     .background(
-                                        color = Color(0xFF3B82F6).copy(alpha = 0.2f),
+                                        color = colors.secondary.copy(alpha = 0.2f),
                                         shape = RoundedCornerShape(8.dp)
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Lock,
-                                    contentDescription = "Passcode",
-                                    tint = Color(0xFF3B82F6)
+                                    imageVector = Icons.Default.Security,
+                                    contentDescription = "Change Passcode",
+                                    tint = colors.secondary
                                 )
                             }
                             Spacer(modifier = Modifier.width(16.dp))
                             Column {
                                 Text(
-                                    text = "Passcode Lock",
-                                    color = Color.White,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    text = "Change Passcode",
+                                    color = colors.onSurface,
+                                    fontSize = accessibility.bodyFontSize,
+                                    fontWeight = accessibility.bodyFontWeight
                                 )
                                 Text(
-                                    text = "Secure app startup and backgrounding",
-                                    color = Color(0xFF94A3B8),
-                                    fontSize = 12.sp
+                                    text = "Update your 4-digit PIN",
+                                    color = colors.textSecondary,
+                                    fontSize = accessibility.captionFontSize
                                 )
                             }
                         }
 
-                        Switch(
-                            checked = isPasscodeEnabled,
-                            onCheckedChange = { checked ->
-                                if (checked) {
-                                    onNavigateToLock("setup")
-                                } else {
-                                    onNavigateToLock("verify")
-                                }
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = Color(0xFF3B82F6),
-                                uncheckedThumbColor = Color(0xFF94A3B8),
-                                uncheckedTrackColor = Color(0xFF334155)
-                            )
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = "Navigate",
+                            tint = colors.textTertiary
                         )
-                    }
-
-                    if (isPasscodeEnabled) {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        HorizontalDivider(
-                            color = Color(0xFF334155)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Change Passcode row
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    onNavigateToLock("verify_change")
-                                }
-                                .padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .background(
-                                            color = Color(0xFF8B5CF6).copy(alpha = 0.2f),
-                                            shape = RoundedCornerShape(8.dp)
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Security,
-                                        contentDescription = "Change Passcode",
-                                        tint = Color(0xFF8B5CF6)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(16.dp))
-                                Column {
-                                    Text(
-                                        text = "Change Passcode",
-                                        color = Color.White,
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    Text(
-                                        text = "Update your 4-digit PIN",
-                                        color = Color(0xFF94A3B8),
-                                        fontSize = 12.sp
-                                    )
-                                }
-                            }
-
-                            Icon(
-                                imageVector = Icons.Default.ChevronRight,
-                                contentDescription = "Navigate",
-                                tint = Color(0xFF64748B)
-                            )
-                        }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
                     HorizontalDivider(
-                        color = Color(0xFF334155)
+                        color = colors.divider
                     )
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -243,7 +163,7 @@ fun SecurityScreen(
                                 modifier = Modifier
                                     .size(40.dp)
                                     .background(
-                                        color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                        color = colors.success.copy(alpha = 0.2f),
                                         shape = RoundedCornerShape(8.dp)
                                     ),
                                 contentAlignment = Alignment.Center
@@ -251,21 +171,21 @@ fun SecurityScreen(
                                 Icon(
                                     imageVector = Icons.Default.GpsFixed,
                                     contentDescription = "Share Location",
-                                    tint = Color(0xFF10B981)
+                                    tint = colors.success
                                 )
                             }
                             Spacer(modifier = Modifier.width(16.dp))
                             Column {
                                 Text(
                                     text = "Share Device Location",
-                                    color = Color.White,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    color = colors.onSurface,
+                                    fontSize = accessibility.bodyFontSize,
+                                    fontWeight = accessibility.bodyFontWeight
                                 )
                                 Text(
                                     text = "Allow to share proximity location",
-                                    color = Color(0xFF94A3B8),
-                                    fontSize = 12.sp
+                                    color = colors.textSecondary,
+                                    fontSize = accessibility.captionFontSize
                                 )
                             }
                         }
@@ -278,14 +198,117 @@ fun SecurityScreen(
                             },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color.White,
-                                checkedTrackColor = Color(0xFF10B981),
-                                uncheckedThumbColor = Color(0xFF94A3B8),
-                                uncheckedTrackColor = Color(0xFF334155)
+                                checkedTrackColor = colors.success,
+                                uncheckedThumbColor = colors.textSecondary,
+                                uncheckedTrackColor = colors.divider
                             )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    HorizontalDivider(
+                        color = colors.divider
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Reset User ID row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showResetDialog = true
+                            }
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(
+                                        color = colors.error.copy(alpha = 0.2f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Reset ID",
+                                    tint = colors.error
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column {
+                                Text(
+                                    text = "Reset User ID",
+                                    color = colors.onSurface,
+                                    fontSize = accessibility.bodyFontSize,
+                                    fontWeight = accessibility.bodyFontWeight
+                                )
+                                Text(
+                                    text = "Generate a new static identifier",
+                                    color = colors.textSecondary,
+                                    fontSize = accessibility.captionFontSize
+                                )
+                            }
+                        }
+
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = "Navigate",
+                            tint = colors.textTertiary
                         )
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.weight(1f))
+        }
+
+        if (showResetDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showResetDialog = false
+                },
+                containerColor = colors.surface,
+                title = {
+                    Text(
+                        text = "Reset User ID",
+                        color = colors.onSurface,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Text(
+                        text = "Warning: Resetting your User ID will remove your connection to people who added you to their contacts. They will not be able to message you until they add your new ID.",
+                        color = colors.error,
+                        fontSize = accessibility.bodyFontSize
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showResetDialog = false
+                            onNavigateToLock("verify_reset_id")
+                        }
+                    ) {
+                        Text("Confirm Reset", color = colors.error)
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showResetDialog = false
+                        }
+                    ) {
+                        Text("Cancel", color = colors.onSurface)
+                    }
+                }
+            )
         }
     }
 }

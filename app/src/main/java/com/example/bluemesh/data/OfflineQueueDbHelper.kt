@@ -93,7 +93,7 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
         return db.insert("QueuedMessages", null, values)
     }
 
-    private fun resolveCanonicalUuid(contactUuid: String): String {
+    fun resolveCanonicalUuid(contactUuid: String): String {
         val contacts = getContactsList()
         val match = contacts.find {
             com.example.bluemesh.utils.uuidsMatch(it.first, contactUuid)
@@ -191,6 +191,25 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
         return exists
     }
 
+    fun getLastReceivedMessages(limit: Int): List<Triple<String, Long, String>> {
+        val list = mutableListOf<Triple<String, Long, String>>()
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT contact_uuid, timestamp, text FROM QueuedMessages WHERE is_from_me = 0 ORDER BY timestamp DESC LIMIT ?",
+            arrayOf(limit.toString())
+        )
+        if (cursor.moveToFirst()) {
+            do {
+                val contactUuid = cursor.getString(0) ?: ""
+                val timestamp = cursor.getLong(1)
+                val text = cursor.getString(2) ?: ""
+                list.add(Triple(contactUuid, timestamp, text))
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        return list
+    }
+
     fun updateMessageContactUuid(oldUuid: String, newUuid: String) {
         val db = writableDatabase
         val values = ContentValues().apply {
@@ -217,10 +236,20 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
 
     fun saveSessionKey(uuid: String, sessionKey: String) {
         val db = writableDatabase
+        val cursor = db.rawQuery("SELECT name FROM Contacts WHERE uuid = ?", arrayOf(uuid))
+        val exists = cursor.count > 0
+        cursor.close()
+
         val values = ContentValues().apply {
             put("session_key", sessionKey)
         }
-        db.update("Contacts", values, "uuid = ?", arrayOf(uuid))
+        if (exists) {
+            db.update("Contacts", values, "uuid = ?", arrayOf(uuid))
+        } else {
+            values.put("uuid", uuid)
+            values.put("name", "Temp_Peer")
+            db.insert("Contacts", null, values)
+        }
     }
 
     fun getSessionKey(uuid: String): String? {

@@ -1,11 +1,10 @@
 package com.example.bluemesh
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -13,12 +12,27 @@ import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import com.example.bluemesh.data.DefaultDataRepository
+import com.example.bluemesh.ui.AccessibilityState
+import com.example.bluemesh.ui.LocalAccessibility
+import com.example.bluemesh.ui.accessibility.AccessibilityScreen
 import com.example.bluemesh.ui.chat.ChatScreen
 import com.example.bluemesh.ui.contacts.ContactsScreen
+import com.example.bluemesh.ui.computeAccessibilityState
 import com.example.bluemesh.ui.lock.LockScreen
 import com.example.bluemesh.ui.main.MainScreen
 import com.example.bluemesh.ui.security.SecurityScreen
 import com.example.bluemesh.ui.setup.SetupScreen
+import androidx.navigation3.runtime.NavKey
+import kotlinx.serialization.Serializable
+
+@Serializable data object Setup : NavKey
+@Serializable data object Main : NavKey
+@Serializable data class Chat(val peerUuid: String, val peerName: String) : NavKey
+@Serializable data object ContactsList : NavKey
+@Serializable data object SecuritySettings : NavKey
+@Serializable data object AccessibilitySettings : NavKey
+@Serializable data class Lock(val mode: String) : NavKey
+@Serializable data object SetupPasscode : NavKey
 
 @Composable
 fun MainNavigation() {
@@ -30,11 +44,23 @@ fun MainNavigation() {
     val passcodeEnabled = repository.isPasscodeEnabled()
 
     val startDestination = if (initialName.isEmpty()) Setup 
-                           else if (isVolunteersEdition && !passcodeEnabled) SetupPasscode 
+                           else if (!passcodeEnabled) SetupPasscode 
                            else Main
     val backStack = rememberNavBackStack(startDestination)
+    var accessibilityState by remember { mutableStateOf(computeAccessibilityState(repository.isBoldTextEnabled(), repository.getFontSizeLevel())) }
 
-    NavDisplay(
+    DisposableEffect(Unit) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "bold_text_enabled" || key == "font_size_level") {
+                accessibilityState = computeAccessibilityState(repository.isBoldTextEnabled(), repository.getFontSizeLevel())
+            }
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
+    CompositionLocalProvider(LocalAccessibility provides accessibilityState) {
+        NavDisplay(
         backStack = backStack,
         onBack = {
             if (backStack.size > 1) {
@@ -52,7 +78,7 @@ fun MainNavigation() {
             entry<Setup> {
                 SetupScreen(
                     onSetupComplete = {
-                        if (isVolunteersEdition && !repository.isPasscodeEnabled()) {
+                        if (!repository.isPasscodeEnabled()) {
                             backStack.add(SetupPasscode)
                         } else {
                             backStack.add(Main)
@@ -78,9 +104,6 @@ fun MainNavigation() {
                 )
             }
             entry<Chat> { key ->
-                LaunchedEffect(key.peerUuid) {
-                    repository.setActiveChat(key.peerUuid)
-                }
                 ChatScreen(
                     peerUuid = key.peerUuid,
                     peerName = key.peerName,
@@ -112,6 +135,13 @@ fun MainNavigation() {
                     }
                 )
             }
+            entry<AccessibilitySettings> {
+                AccessibilityScreen(
+                    onBackClick = {
+                        backStack.removeLastOrNull()
+                    }
+                )
+            }
             entry<Lock> { key ->
                 LockScreen(
                     mode = key.mode,
@@ -128,6 +158,9 @@ fun MainNavigation() {
                                 backStack.removeLastOrNull()
                                 backStack.add(Lock("setup"))
                             }
+                            "verify_reset_id" -> {
+                                backStack.removeLastOrNull()
+                            }
                         }
                     },
                     onBack = {
@@ -137,4 +170,5 @@ fun MainNavigation() {
             }
         }
     )
+    }
 }

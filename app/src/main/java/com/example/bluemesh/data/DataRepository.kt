@@ -37,6 +37,7 @@ interface DataRepository {
     fun isContact(uuid: String): Boolean
     fun setActiveChat(uuid: String)
     fun connectToPeerByUuid(uuid: String)
+    fun refreshConnection(uuid: String)
 
     fun isPasscodeEnabled(): Boolean
     fun savePasscode(pin: String)
@@ -46,4 +47,10 @@ interface DataRepository {
     fun setShareLocationEnabled(enabled: Boolean)
     fun isDiscoverableEnabled(): Boolean
     fun setDiscoverableEnabled(enabled: Boolean)
+    fun resetUserUuid(passcode: String): Boolean
+
+    fun isBoldTextEnabled(): Boolean
+    fun setBoldTextEnabled(enabled: Boolean)
+    fun getFontSizeLevel(): Int
+    fun setFontSizeLevel(level: Int)
 }
