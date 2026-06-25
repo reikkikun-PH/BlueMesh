@@ -1,0 +1,57 @@
+package com.example.bluemesh.data
+
+import android.bluetooth.BluetoothDevice
+import com.example.bluemesh.data.models.BluetoothPeer
+import com.example.bluemesh.data.models.ChatMessage
+import com.example.bluemesh.data.models.ConnectionStatus
+import kotlinx.coroutines.flow.StateFlow
+
+// DataRepository interface is kept to allow mocking/test doubles during unit testing and to decouple the UI layer from the Bluetooth/DB details.
+interface DataRepository {
+    fun getLockoutTimeRemaining(): Long
+
+    val discoveredPeers: StateFlow<List<BluetoothPeer>>
+    val connectionStatus: StateFlow<ConnectionStatus>
+    val isReady: StateFlow<Boolean>
+    val chatMessages: StateFlow<List<ChatMessage>>
+    val isScanning: StateFlow<Boolean>
+    val isAdvertising: StateFlow<Boolean>
+
+    fun onPermissionsReady()
+    fun startScan()
+    fun stopScan()
+    fun startAdvertising(name: String)
+    fun stopAdvertising()
+    fun connectToPeer(device: BluetoothDevice)
+    fun disconnect()
+    fun sendMessage(text: String): Boolean
+    fun getDisplayName(): String
+    fun saveDisplayName(name: String)
+    fun clearChatHistory()
+    fun clearDiscoveredPeers()
+
+
+    fun getUserUuid(): String
+    fun getContacts(): List<BluetoothPeer>
+    fun saveContact(uuid: String, name: String)
+    fun deleteContact(uuid: String)
+    fun isContact(uuid: String): Boolean
+    fun setActiveChat(uuid: String)
+    fun connectToPeerByUuid(uuid: String)
+    fun refreshConnection(uuid: String)
+
+    fun isPasscodeEnabled(): Boolean
+    fun savePasscode(pin: String)
+    fun verifyPasscode(pin: String): Boolean
+    fun disablePasscode()
+    fun isShareLocationEnabled(): Boolean
+    fun setShareLocationEnabled(enabled: Boolean)
+    fun isDiscoverableEnabled(): Boolean
+    fun setDiscoverableEnabled(enabled: Boolean)
+    fun resetUserUuid(passcode: String): Boolean
+
+    fun isBoldTextEnabled(): Boolean
+    fun setBoldTextEnabled(enabled: Boolean)
+    fun getFontSizeLevel(): Int
+    fun setFontSizeLevel(level: Int)
+}
