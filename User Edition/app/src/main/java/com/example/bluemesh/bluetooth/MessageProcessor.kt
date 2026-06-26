@@ -11,6 +11,8 @@ class MessageProcessor(private val tracker: ConnectionTracker) {
 
     var onKeyExchangeReceived: ((String, ByteArray, BluetoothDevice) -> Unit)? = null
 
+    private val firstChunkTimes = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     fun handleIncomingValue(device: BluetoothDevice, value: ByteArray) {
         val receiveTime = System.currentTimeMillis()
         Log.d(Constants.TAG, "RX value from ${device.address}: ${value.size} bytes, first=${value[0].toInt() and 0xFF}")
@@ -27,14 +29,18 @@ class MessageProcessor(private val tracker: ConnectionTracker) {
                     val senderUuid = bytesToUuid(assembled.copyOfRange(1, 17)).toString()
                     onKeyExchangeReceived?.invoke(senderUuid, assembled.copyOfRange(17, assembled.size), device)
                 }
+                firstChunkTimes.remove("${device.address}_${type}")
             } else if (type == 1.toByte()) {
-                processType1Payload(assembled, device, receiveTime)
+                val chunkKey = "${device.address}_${type}"
+                val firstChunkTime = firstChunkTimes.remove(chunkKey) ?: receiveTime
+                processType1Payload(assembled, device, firstChunkTime)
             } else if (type == 3.toByte()) {
                 if (assembled.size >= 8) {
+                    firstChunkTimes.remove("${device.address}_${type}")
                     val ackTimestamp = ByteBuffer.wrap(assembled).long
-                    val actualSendTime = tracker.actualSendTimes.remove(ackTimestamp)
-                    val latencyMs = if (actualSendTime != null) {
-                        val rtt = receiveTime - actualSendTime
+                    val wireWriteTime = tracker.actualSendTimes.remove(ackTimestamp)
+                    val latencyMs = if (wireWriteTime != null) {
+                        val rtt = receiveTime - wireWriteTime
                         if (rtt < 0) 0L else rtt / 2
                     } else null
                     val originalCreationTime = tracker.otaToCreationTime.remove(ackTimestamp)
@@ -51,11 +57,13 @@ class MessageProcessor(private val tracker: ConnectionTracker) {
         val totalChunks = packet[2].toInt() and 0xFF
         val data = packet.copyOfRange(3, packet.size)
 
+        val key = "${senderAddress}_${type}"
+
         if (totalChunks <= 1) {
+            firstChunkTimes[key] = System.currentTimeMillis()
             return Pair(type, data)
         }
 
-        val key = "${senderAddress}_${type}"
         tracker.lastChunkTimestamp[key] = System.currentTimeMillis()
         val chunksMap = tracker.incomingChunks.getOrPut(key) { java.util.concurrent.ConcurrentHashMap() }
 
@@ -65,6 +73,7 @@ class MessageProcessor(private val tracker: ConnectionTracker) {
         synchronized(chunksMap) {
             if (chunkIndex == 0) {
                 chunksMap.clear()
+                firstChunkTimes[key] = System.currentTimeMillis()
             }
             chunksMap[chunkIndex] = data
             if (chunksMap.size == totalChunks) {
@@ -73,6 +82,7 @@ class MessageProcessor(private val tracker: ConnectionTracker) {
                     isAssembled = true
                     tracker.incomingChunks.remove(key)
                     tracker.lastChunkTimestamp.remove(key)
+                    firstChunkTimes.remove(key)
                     val totalSize = (0 until totalChunks).sumOf { chunksMap[it]!!.size }
                     val assembled = ByteArray(totalSize)
                     var offset = 0

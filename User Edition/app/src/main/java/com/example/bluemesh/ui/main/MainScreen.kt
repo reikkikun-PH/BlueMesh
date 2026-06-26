@@ -191,7 +191,7 @@ fun MainScreen(
                     onClick = {
                         scope.launch { drawerState.close() }
                         try {
-                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://reikkikun-ph.github.io/BlueMesh-Website/"))
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://bluemesh-icct.github.io/"))
                             context.startActivity(intent)
                         } catch (e: Exception) {
                             Toast.makeText(context, "Cannot open browser: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()

@@ -28,6 +28,7 @@ interface DataRepository {
     fun getDisplayName(): String
     fun saveDisplayName(name: String)
     fun clearChatHistory()
+    fun deleteOutgoingMessage(timestamp: Long)
     fun clearDiscoveredPeers()
 
 

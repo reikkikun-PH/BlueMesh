@@ -42,7 +42,7 @@ class ChatScreenViewModel(
         if (sent) {
             _canSend.value = false
             viewModelScope.launch {
-                delay(300)
+                delay(1500)
                 _canSend.value = true
             }
         }
@@ -51,5 +51,9 @@ class ChatScreenViewModel(
 
     fun clearChatHistory() {
         dataRepository.clearChatHistory()
+    }
+
+    fun deleteOutgoingMessage(timestamp: Long) {
+        dataRepository.deleteOutgoingMessage(timestamp)
     }
 }

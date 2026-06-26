@@ -48,7 +48,7 @@ class GattClientManager(
                     }
                     tracker.clientConnections.remove(disconnectedAddress)
                     val peerUuid = tracker.getPeerList().find { it.address == disconnectedAddress }?.uuid
-                        ?: tracker.uuidToServerAddress.entries.firstOrNull { it.value == disconnectedAddress }?.key
+                        ?: tracker.getUuidByAddress(disconnectedAddress)
                     if (peerUuid != null) {
                         onPeerDisconnectedCallback?.invoke(peerUuid)
                     }
@@ -264,7 +264,7 @@ class GattClientManager(
         if (isServerConnected) {
             tracker.updateDeviceStatus(device.address, ConnectionStatus.CONNECTED)
             val deviceUuid = tracker.getPeerList().find { it.address == device.address || it.device?.address == device.address }?.uuid
-                ?: tracker.uuidToServerAddress.entries.firstOrNull { it.value == device.address }?.key
+                ?: tracker.getUuidByAddress(device.address)
             val trackedDevice = tracker.connectedClients.find { it.address == device.address }
                 ?: deviceUuid?.let { uuid ->
                     val mappedAddr = tracker.uuidToServerAddress.entries.firstOrNull { com.example.bluemesh.utils.uuidsMatch(it.key, uuid) }?.value
@@ -275,7 +275,7 @@ class GattClientManager(
                 scope.launch {
                     delay(300)
                     val peerUuid = tracker.getPeerList().find { it.address == trackedDevice.address }?.uuid
-                        ?: tracker.uuidToServerAddress.entries.firstOrNull { it.value == trackedDevice.address }?.key ?: ""
+                            ?: tracker.getUuidByAddress(trackedDevice.address) ?: ""
                     if (peerUuid.isNotEmpty()) {
                         onPeerReadyCallback?.invoke(peerUuid, trackedDevice)
                     }
@@ -284,8 +284,13 @@ class GattClientManager(
             }
         }
         if (tracker.clientConnections.containsKey(device.address)) {
-            Log.d(Constants.TAG, "Already client-connected to ${device.address}. Skipping reconnect.")
-            return
+            val currentStatus = tracker.getConnectionStatusForAddress(device.address)
+            if (currentStatus == ConnectionStatus.CONNECTED) {
+                Log.d(Constants.TAG, "Already client-connected to ${device.address}. Skipping reconnect.")
+                return
+            }
+            Log.w(Constants.TAG, "Stale client connection for ${device.address} (status=$currentStatus). Cleaning up and reconnecting.")
+            disconnectClient(device.address)
         }
         if (tracker.clientConnections.size >= Constants.MAX_CLIENT_CONNECTIONS ||
             (tracker.clientConnections.size + tracker.connectedClients.size) >= Constants.MAX_CONNECTIONS_OVERALL) {

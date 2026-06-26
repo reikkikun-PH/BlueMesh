@@ -95,13 +95,14 @@ class PacketBroadcaster(
                 }
             }
 
+            val wireWriteTime = System.currentTimeMillis()
             if (tracker.actualSendTimes.size > 500) {
                 val sortedKeys = tracker.actualSendTimes.keys.toList()
                 for (i in 0 until sortedKeys.size - 200) {
                     tracker.actualSendTimes.remove(sortedKeys[i])
                 }
             }
-            tracker.actualSendTimes[actualSendTime] = actualSendTime
+            tracker.actualSendTimes[actualSendTime] = wireWriteTime
             if (tracker.otaToCreationTime.size > 500) {
                 val sortedKeys = tracker.otaToCreationTime.keys.toList()
                 for (i in 0 until sortedKeys.size - 200) {
@@ -244,7 +245,7 @@ class PacketBroadcaster(
         val targetAddress = targetDevice?.address
         val targetUuid = targetAddress?.let { addr ->
             tracker.getPeerList().find { it.address == addr }?.uuid
-                ?: tracker.uuidToServerAddress.entries.firstOrNull { it.value == addr }?.key
+                ?: tracker.getUuidByAddress(addr)
         } ?: ""
 
         // Path A: Send via GATT client connection (highly reliable — write with response)
@@ -257,11 +258,10 @@ class PacketBroadcaster(
                         allSent = false
                         break
                     }
-                    if (chunks.size > 1) delay(80)
+                    if (chunks.size > 1) delay(30)
                 }
                 if (allSent) return true
                 Log.w(Constants.TAG, "Path A (client write) failed for $targetAddress, falling back to Path B")
-                gattClientManager.disconnectClient(targetAddress)
             }
         }
 
@@ -273,7 +273,7 @@ class PacketBroadcaster(
             else if (targetUuid.isNotEmpty()) tracker.getConnectedDeviceByPeerUuid(targetUuid)
             else null
         } ?: targetDevice?.address?.let { addr ->
-            val uuid = tracker.uuidToServerAddress.entries.firstOrNull { it.value == addr }?.key
+            val uuid = tracker.getUuidByAddress(addr)
             if (uuid != null) tracker.getDeviceByUuid(uuid) else null
         } ?: targetDevice
         if (activeClient != null && server != null) {
@@ -308,7 +308,7 @@ class PacketBroadcaster(
                         delay(50)
                     }
                     if (!chunkOk) { allSent = false; break }
-                    if (chunks.size > 1) delay(80)
+                    if (chunks.size > 1) delay(30)
                 }
                 if (allSent) return true
             }

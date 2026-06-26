@@ -13,8 +13,8 @@ android {
         applicationId = "com.example.bluemesh"
         minSdk = 24
         targetSdk = 36
-        versionCode = 118
-        versionName = "29.14"
+        versionCode = 130
+        versionName = "29.26"
         buildConfigField("boolean", "IS_OFFICIAL_APP", "false")
         buildConfigField("boolean", "SHOW_NOTIFICATION_BADGE", "false")
         buildConfigField("boolean", "HIGH_IMPORTANCE_NOTIFICATION", "false")

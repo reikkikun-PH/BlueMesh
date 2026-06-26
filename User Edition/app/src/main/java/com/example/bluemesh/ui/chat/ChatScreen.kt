@@ -1,7 +1,9 @@
 package com.example.bluemesh.ui.chat
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -247,7 +249,11 @@ fun ChatScreen(
                     .fillMaxWidth()
             ) {
                 items(messages) { message ->
-                    ChatBubble(message = message, accessibility = accessibility)
+                    ChatBubble(
+                        message = message,
+                        accessibility = accessibility,
+                        onDeleteMessage = viewModel::deleteOutgoingMessage
+                    )
                 }
             }
 
@@ -315,10 +321,12 @@ fun ChatScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatBubble(
     message: ChatMessage,
-    accessibility: AccessibilityState = AccessibilityState()
+    accessibility: AccessibilityState = AccessibilityState(),
+    onDeleteMessage: ((Long) -> Unit)? = null
 ) {
     val colors = LocalBlueMeshColors.current
     val alignment = if (message.isFromMe) Alignment.CenterEnd else Alignment.CenterStart
@@ -329,6 +337,8 @@ fun ChatBubble(
     }
     val textColor = colors.onSurface
 
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
     Box(
         modifier = Modifier.fillMaxWidth(),
         contentAlignment = alignment
@@ -336,6 +346,14 @@ fun ChatBubble(
         Column(
             modifier = Modifier
                 .widthIn(max = 280.dp)
+                .then(
+                    if (message.isFromMe && (message.status == "PENDING" || message.status == "FAILED") && onDeleteMessage != null)
+                        Modifier.combinedClickable(
+                            onClick = {},
+                            onLongClick = { showDeleteConfirm = true }
+                        )
+                    else Modifier
+                )
                 .background(
                     brush = bubbleColor,
                     shape = RoundedCornerShape(
@@ -364,6 +382,12 @@ fun ChatBubble(
                         Text(
                             text = "Sending…",
                             color = colors.onSurface.copy(alpha = 0.6f),
+                            fontSize = 10.sp
+                        )
+                    } else if (message.status == "FAILED") {
+                        Text(
+                            text = "Failed",
+                            color = Color(0xFFEF4444),
                             fontSize = 10.sp
                         )
                     } else if (message.status == "SENT") {
@@ -402,7 +426,32 @@ fun ChatBubble(
                     modifier = Modifier.align(Alignment.End)
                 )
             }
-
         }
+    }
+
+    if (showDeleteConfirm && onDeleteMessage != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = {
+                Text("Delete Message", color = colors.onSurface)
+            },
+            text = {
+                Text("Remove this message from the queue?", color = colors.textSecondary)
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteConfirm = false
+                    onDeleteMessage(message.timestamp)
+                }) {
+                    Text("Delete", color = colors.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
+            },
+            containerColor = colors.surface
+        )
     }
 }

@@ -106,10 +106,7 @@ class BluetoothHandler(private val context: Context) {
                         gattServerManager.stopGattServer()
                         _connectionStatus.value = ConnectionStatus.DISCONNECTED
                         _isReady.value = false
-                        tracker.clientConnections.clear()
-                        tracker.connectedClients.clear()
-                        tracker.connectedServerDevice = null
-                        tracker.clearDiscoveredPeers()
+                        tracker.clearAll()
                     } catch (e: Exception) {
                         Log.e(Constants.TAG, "Error cleaning up on Bluetooth state off", e)
                     }
@@ -568,14 +565,24 @@ class BluetoothHandler(private val context: Context) {
     }
 
     fun disconnectFromPeer(uuid: String) {
-        val peer = tracker.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, uuid) }
-        val address = peer?.address ?: tracker.uuidToServerAddress.entries.firstOrNull { com.example.bluemesh.utils.uuidsMatch(it.key, uuid) }?.value
-        if (address != null) {
-            Log.d(Constants.TAG, "disconnectFromPeer $uuid at address $address")
-            gattClientManager.disconnectClient(address)
-            gattServerManager.disconnectServerClient(address)
-        } else {
+        val addresses = mutableSetOf<String>()
+        tracker.addressToUuid.entries.forEach { (addr, trackedUuid) ->
+            if (com.example.bluemesh.utils.uuidsMatch(trackedUuid, uuid)) addresses.add(addr)
+        }
+        tracker.uuidToServerAddress.entries.forEach { (trackedUuid, addr) ->
+            if (com.example.bluemesh.utils.uuidsMatch(trackedUuid, uuid)) addresses.add(addr)
+        }
+        tracker.discoveredPeers.value.filter { com.example.bluemesh.utils.uuidsMatch(it.uuid, uuid) }.forEach {
+            addresses.add(it.address)
+        }
+        if (addresses.isEmpty()) {
             Log.d(Constants.TAG, "disconnectFromPeer: no address found for UUID $uuid")
+            return
+        }
+        Log.d(Constants.TAG, "disconnectFromPeer $uuid at addresses $addresses")
+        addresses.forEach { addr ->
+            gattClientManager.disconnectClient(addr)
+            gattServerManager.disconnectServerClient(addr)
         }
     }
 

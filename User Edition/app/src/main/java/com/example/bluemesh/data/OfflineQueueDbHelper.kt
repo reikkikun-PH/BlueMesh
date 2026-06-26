@@ -238,11 +238,44 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
         val db = writableDatabase
         val cutoff = System.currentTimeMillis() - 300000
         val values = ContentValues().apply {
-            put("status", "SENT")
+            put("status", "FAILED")
         }
         db.update("QueuedMessages", values,
             "status = 'PENDING' AND is_from_me = 1 AND timestamp < ?",
             arrayOf(cutoff.toString()))
+    }
+
+    fun markMessageAsFailed(timestamp: Long) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("status", "FAILED")
+        }
+        db.update("QueuedMessages", values, "timestamp = ? AND is_from_me = 1", arrayOf(timestamp.toString()))
+    }
+
+    fun deleteMessageByTimestamp(timestamp: Long) {
+        val db = writableDatabase
+        db.delete("QueuedMessages", "timestamp = ? AND is_from_me = 1", arrayOf(timestamp.toString()))
+    }
+
+    fun getAllPendingMessages(): Map<String, MutableList<Triple<Int, String, Long>>> {
+        val result = mutableMapOf<String, MutableList<Triple<Int, String, Long>>>()
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT contact_uuid, id, text, timestamp FROM QueuedMessages WHERE status = 'PENDING' AND is_from_me = 1 ORDER BY timestamp ASC",
+            null
+        )
+        if (cursor.moveToFirst()) {
+            do {
+                val contactUuid = cursor.getString(0)
+                val id = cursor.getInt(1)
+                val text = cursor.getString(2)
+                val timestamp = cursor.getLong(3)
+                result.getOrPut(contactUuid) { mutableListOf() }.add(Triple(id, text, timestamp))
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        return result
     }
 
     fun saveSessionKey(uuid: String, sessionKey: String) {
@@ -261,6 +294,14 @@ class OfflineQueueDbHelper(context: Context) : SQLiteOpenHelper(context, DATABAS
             values.put("name", "Temp_Peer")
             db.insert("Contacts", null, values)
         }
+    }
+
+    fun deleteSessionKey(uuid: String) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            putNull("session_key")
+        }
+        db.update("Contacts", values, "uuid = ?", arrayOf(uuid))
     }
 
     fun getSessionKey(uuid: String): String? {

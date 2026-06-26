@@ -48,6 +48,7 @@ class ConnectionTracker(private val context: android.content.Context, private va
     val incomingChunks = ConcurrentHashMap<String, ConcurrentHashMap<Int, ByteArray>>()
     val lastChunkTimestamp = ConcurrentHashMap<String, Long>()
     val actualSendTimes = ConcurrentHashMap<Long, Long>()
+    val addressToUuid = ConcurrentHashMap<String, String>()
     val otaToCreationTime = ConcurrentHashMap<Long, Long>()
     val messageIdCache = java.util.Collections.synchronizedList(mutableListOf<Int>())
     val currentWriteDeferreds = ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Boolean>>()
@@ -140,7 +141,7 @@ class ConnectionTracker(private val context: android.content.Context, private va
         val isDirectConnected = connectedClients.any { it.address == device.address }
         if (isDirectConnected) return true
         val deviceUuid = _discoveredPeers.value.find { it.address == device.address || it.device?.address == device.address }?.uuid
-            ?: uuidToServerAddress.entries.firstOrNull { it.value == device.address }?.key
+            ?: getUuidByAddress(device.address)
         if (deviceUuid != null && deviceUuid.isNotEmpty()) {
             val isUuidConnected = connectedClients.any { client ->
                 val mappedAddr = uuidToServerAddress.entries.firstOrNull { uuidsMatch(it.key, deviceUuid) }?.value
@@ -296,12 +297,14 @@ class ConnectionTracker(private val context: android.content.Context, private va
     }
 
     fun getUuidByAddress(deviceAddress: String): String? {
-        return uuidToServerAddress.entries.firstOrNull { it.value == deviceAddress }?.key
+        return addressToUuid[deviceAddress]
+            ?: uuidToServerAddress.entries.firstOrNull { it.value == deviceAddress }?.key
     }
 
     fun getUuidMapDump(): String {
-        if (uuidToServerAddress.isEmpty()) return "(empty)"
-        return uuidToServerAddress.entries.joinToString(";") { "${it.key}→${it.value}" }
+        val fwd = uuidToServerAddress.entries.joinToString(";") { "${it.key}→${it.value}" }
+        val rev = addressToUuid.entries.joinToString(";") { "${it.key}→${it.value}" }
+        return "fwd=[$fwd] rev=[$rev]"
     }
 
     fun getConnectedDeviceAddress(): String? {
@@ -314,31 +317,38 @@ class ConnectionTracker(private val context: android.content.Context, private va
 
     fun updatePeerUuid(fullUuid: String, deviceAddress: String) {
         uuidToServerAddress[fullUuid] = deviceAddress
+        addressToUuid[deviceAddress] = fullUuid
         Log.d(Constants.TAG, "updatePeerUuid added $fullUuid → $deviceAddress, map size=${uuidToServerAddress.size}")
         uuidToServerAddress.keys.toList().forEach { key ->
             if (key != fullUuid && uuidsMatch(key, fullUuid)) {
-                uuidToServerAddress.remove(key)
+                val oldAddr = uuidToServerAddress.remove(key)
                 Log.d(Constants.TAG, "updatePeerUuid removed duplicate key $key")
             }
         }
         _discoveredPeers.update { current ->
-            var found = false
-            val updated = current.map { peer ->
-                val matches = uuidsMatch(peer.uuid, fullUuid) || peer.address == deviceAddress
-                if (matches) {
-                    found = true
-                    peer.copy(uuid = fullUuid, address = deviceAddress, lastSeen = System.currentTimeMillis())
-                } else peer
-            }
-            if (found) {
-                updated
+            val existingByUuid = current.find { uuidsMatch(it.uuid, fullUuid) }
+            if (existingByUuid != null) {
+                current.map { peer ->
+                    if (uuidsMatch(peer.uuid, fullUuid))
+                        peer.copy(uuid = fullUuid, address = deviceAddress, lastSeen = System.currentTimeMillis(), device = getConnectedDeviceByAddress(deviceAddress))
+                    else peer
+                }
             } else {
-                val resolvedName = onResolvePeerName?.invoke(fullUuid) ?: ""
-                val device = getConnectedDeviceByAddress(deviceAddress)
-                updated + BluetoothPeer(
-                    address = deviceAddress, name = resolvedName, device = device,
-                    lastSeen = System.currentTimeMillis(), uuid = fullUuid
-                )
+                val existingByAddr = current.find { it.address == deviceAddress }
+                if (existingByAddr != null) {
+                    current.map { peer ->
+                        if (peer.address == deviceAddress)
+                            peer.copy(uuid = fullUuid, lastSeen = System.currentTimeMillis())
+                        else peer
+                    }
+                } else {
+                    val resolvedName = onResolvePeerName?.invoke(fullUuid) ?: ""
+                    val device = getConnectedDeviceByAddress(deviceAddress)
+                    current + BluetoothPeer(
+                        address = deviceAddress, name = resolvedName, device = device,
+                        lastSeen = System.currentTimeMillis(), uuid = fullUuid
+                    )
+                }
             }
         }
         val status = deviceConnectionStatuses[deviceAddress] ?: ConnectionStatus.DISCONNECTED
@@ -364,6 +374,7 @@ class ConnectionTracker(private val context: android.content.Context, private va
         lastChunkTimestamp.clear()
         actualSendTimes.clear()
         otaToCreationTime.clear()
+        addressToUuid.clear()
         messageIdCache.clear()
         currentWriteDeferreds.values.forEach { it.complete(false) }
         currentWriteDeferreds.clear()
