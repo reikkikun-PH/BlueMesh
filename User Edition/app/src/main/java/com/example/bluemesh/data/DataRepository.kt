@@ -16,6 +16,7 @@ interface DataRepository {
     val chatMessages: StateFlow<List<ChatMessage>>
     val isScanning: StateFlow<Boolean>
     val isAdvertising: StateFlow<Boolean>
+    val isRefreshing: StateFlow<Boolean>
 
     fun onPermissionsReady()
     fun startScan()

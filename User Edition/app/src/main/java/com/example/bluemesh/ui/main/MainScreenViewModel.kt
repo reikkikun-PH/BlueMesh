@@ -9,6 +9,7 @@ class MainScreenViewModel(private val dataRepository: DataRepository) : ViewMode
     val discoveredPeers: StateFlow<List<BluetoothPeer>> = dataRepository.discoveredPeers
     val isScanning: StateFlow<Boolean> = dataRepository.isScanning
     val isAdvertising: StateFlow<Boolean> = dataRepository.isAdvertising
+    val isRefreshing: StateFlow<Boolean> = dataRepository.isRefreshing
 
     val displayName: String
         get() = dataRepository.getDisplayName()

@@ -48,6 +48,11 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     private var lastChatPeerUuid: String = ""
     private val sessionKeys = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
     private var myKeyPair: java.security.KeyPair? = null
+
+    private val _isRefreshing = MutableStateFlow(false)
+    private var refreshMeshServiceJob: Job? = null
+    private var lastRefreshTimestamp = 0L
+    private val REFRESH_COOLDOWN_MS = 3000L
     private val lastConnectionAttempts = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val contactsDbCache = java.util.concurrent.CopyOnWriteArrayList<Triple<String, String, Boolean>>()
     private val pendingMeshMessageIds = java.util.concurrent.ConcurrentHashMap<Int, Long>()
@@ -131,6 +136,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     override val isReady: StateFlow<Boolean> = _activeIsReady.asStateFlow()
     override val isScanning: StateFlow<Boolean> = bluetoothHandler.isScanning
     override val isAdvertising: StateFlow<Boolean> = bluetoothHandler.isAdvertising
+    override val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
     private val _chatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
     override val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
@@ -909,36 +915,48 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     }
 
     override fun refreshMeshService() {
-        scope.launch(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        if (now - lastRefreshTimestamp < REFRESH_COOLDOWN_MS) {
+            Log.d("DataRepository", "refreshMeshService: Skipped — cooldown active")
+            return
+        }
+        refreshMeshServiceJob?.cancel()
+        refreshMeshServiceJob = scope.launch(Dispatchers.IO) {
+            _isRefreshing.value = true
+            lastRefreshTimestamp = System.currentTimeMillis()
             Log.d("DataRepository", "refreshMeshService: Full mesh restart triggered")
 
-            bluetoothHandler.stopAdvertising()
-            bluetoothHandler.disconnect()
-            bluetoothHandler.stopGattServer()
+            try {
+                bluetoothHandler.stopAdvertising()
+                bluetoothHandler.disconnect()
+                bluetoothHandler.stopGattServer()
 
-            bluetoothHandler.clearDiscoveredPeers()
+                bluetoothHandler.clearDiscoveredPeers()
 
-            bluetoothHandler.clearAllTracker(keepDisplayNames = true)
+                bluetoothHandler.clearAllTracker(keepDisplayNames = true)
 
-            pendingAcks.values.forEach { it.complete(false) }
-            pendingAcks.clear()
-            seenKeyExchangeHashes.clear()
-            pendingMeshMessageIds.clear()
-            perPeerSendQueues.values.forEach { while (it.tryReceive().isSuccess) { } }
-            perPeerSendQueues.clear()
-            sendQueueConsumers.values.forEach { it.cancel() }
-            sendQueueConsumers.clear()
+                pendingAcks.values.forEach { it.complete(false) }
+                pendingAcks.clear()
+                seenKeyExchangeHashes.clear()
+                pendingMeshMessageIds.clear()
+                perPeerSendQueues.values.forEach { while (it.tryReceive().isSuccess) { } }
+                perPeerSendQueues.clear()
+                sendQueueConsumers.values.forEach { it.cancel() }
+                sendQueueConsumers.clear()
 
-            delay(300)
+                delay(300)
 
-            bluetoothHandler.ensureGattServerRunning()
-            bluetoothHandler.startAdvertising(getDisplayName())
-            bluetoothHandler.stopScanning()
-            bluetoothHandler.startScanning()
+                bluetoothHandler.ensureGattServerRunning()
+                bluetoothHandler.startAdvertising(getDisplayName())
+                bluetoothHandler.stopScanning()
+                bluetoothHandler.startScanning()
 
-            requeuePendingMessages()
+                requeuePendingMessages()
 
-            Log.d("DataRepository", "refreshMeshService: Mesh restart complete")
+                Log.d("DataRepository", "refreshMeshService: Mesh restart complete")
+            } finally {
+                _isRefreshing.value = false
+            }
         }
     }
 

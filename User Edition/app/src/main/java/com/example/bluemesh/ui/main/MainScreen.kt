@@ -68,6 +68,7 @@ fun MainScreen(
     val peers by viewModel.discoveredPeers.collectAsStateWithLifecycle()
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val isAdvertising by viewModel.isAdvertising.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val isPasscodeEnabled = remember { repository.isPasscodeEnabled() }
     var isDiscoverable by remember { mutableStateOf(repository.isDiscoverableEnabled()) }
     val colors = LocalBlueMeshColors.current
@@ -326,9 +327,18 @@ checkedThumbColor = Color.White,
 
                     IconButton(
                         onClick = { viewModel.startScanning(clearList = true) },
+                        enabled = !isRefreshing,
                         colors = IconButtonDefaults.iconButtonColors(contentColor = colors.primary)
                     ) {
-                        Icon(imageVector = Icons.Default.Refresh, contentDescription = "Rescan")
+                        if (isRefreshing) {
+                            CircularProgressIndicator(
+                                color = colors.primary,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        } else {
+                            Icon(imageVector = Icons.Default.Refresh, contentDescription = "Rescan")
+                        }
                     }
                 }
 
