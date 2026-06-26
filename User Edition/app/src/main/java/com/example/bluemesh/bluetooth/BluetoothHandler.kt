@@ -269,6 +269,7 @@ class BluetoothHandler(private val context: Context) {
                     val nameOffset = if (manufacturerData.size >= 9) 9 else 8
                     val displayName = String(manufacturerData, nameOffset, manufacturerData.size - nameOffset, Charsets.UTF_8).trim()
                     if (displayName.isNotEmpty()) {
+                        tracker.setPeerDisplayName(peerUuid, displayName)
                         tracker.updateDiscoveredPeers { current ->
                             var found = false
                             val updated = current.map { existing ->
@@ -600,7 +601,11 @@ class BluetoothHandler(private val context: Context) {
 
     fun isClient(): Boolean = tracker.isClient()
 
-    fun clearDiscoveredPeers() = tracker.clearDiscoveredPeers()
+    fun clearDiscoveredPeers() {
+        tracker.clearDiscoveredPeers()
+        stopPhysicalScan()
+        startPhysicalScan()
+    }
 
     fun clearAllTracker() = tracker.clearAll()
 

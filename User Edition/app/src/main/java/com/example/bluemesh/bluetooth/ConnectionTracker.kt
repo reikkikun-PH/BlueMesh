@@ -53,6 +53,7 @@ class ConnectionTracker(private val context: android.content.Context, private va
     val messageIdCache = java.util.Collections.synchronizedList(mutableListOf<Int>())
     val currentWriteDeferreds = ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Boolean>>()
     val currentNotificationDeferreds = ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Boolean>>()
+    val peerDisplayNames = ConcurrentHashMap<String, String>()
 
     @Volatile var myUuid: String = ""
 
@@ -336,6 +337,10 @@ class ConnectionTracker(private val context: android.content.Context, private va
 
     var onResolvePeerName: ((String) -> String)? = null
 
+    fun setPeerDisplayName(uuid: String, name: String) {
+        if (name.isNotEmpty()) peerDisplayNames[uuid] = name
+    }
+
     fun updatePeerUuid(fullUuid: String, deviceAddress: String) {
         uuidToServerAddress[fullUuid] = deviceAddress
         addressToUuid[deviceAddress] = fullUuid
@@ -363,7 +368,7 @@ class ConnectionTracker(private val context: android.content.Context, private va
                         else peer
                     }
                 } else {
-                    val resolvedName = onResolvePeerName?.invoke(fullUuid) ?: ""
+                    val resolvedName = onResolvePeerName?.invoke(fullUuid) ?: peerDisplayNames[fullUuid] ?: fullUuid.take(8)
                     val device = getConnectedDeviceByAddress(deviceAddress)
                     current + BluetoothPeer(
                         address = deviceAddress, name = resolvedName, device = device,
@@ -401,5 +406,6 @@ class ConnectionTracker(private val context: android.content.Context, private va
         currentWriteDeferreds.clear()
         currentNotificationDeferreds.values.forEach { it.complete(false) }
         currentNotificationDeferreds.clear()
+        peerDisplayNames.clear()
     }
 }
