@@ -382,22 +382,26 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         bluetoothHandler.onPeerDisconnectedCallback = { peerUuid ->
             scope.launch(Dispatchers.IO) {
                 try {
-                    sessionKeys.remove(peerUuid)
-                    val shortUuid = com.example.bluemesh.utils.normalizeUuid(peerUuid).take(16)
-                    sessionKeys.remove(shortUuid)
-                    val matchingKeys = sessionKeys.keys.filter { com.example.bluemesh.utils.uuidsMatch(it, peerUuid) }
-                    for (k in matchingKeys) {
-                        sessionKeys.remove(k)
-                    }
-                    synchronized(seenKeyExchangeHashes) {
-                        seenKeyExchangeHashes.remove(peerUuid)
-                        seenKeyExchangeHashes.remove(shortUuid)
-                        val matchingHashes = seenKeyExchangeHashes.keys.filter { com.example.bluemesh.utils.uuidsMatch(it, peerUuid) }
-                        for (k in matchingHashes) {
-                            seenKeyExchangeHashes.remove(k)
+                    if (!bluetoothHandler.isPeerConnected(peerUuid)) {
+                        sessionKeys.remove(peerUuid)
+                        val shortUuid = com.example.bluemesh.utils.normalizeUuid(peerUuid).take(16)
+                        sessionKeys.remove(shortUuid)
+                        val matchingKeys = sessionKeys.keys.filter { com.example.bluemesh.utils.uuidsMatch(it, peerUuid) }
+                        for (k in matchingKeys) {
+                            sessionKeys.remove(k)
                         }
+                        synchronized(seenKeyExchangeHashes) {
+                            seenKeyExchangeHashes.remove(peerUuid)
+                            seenKeyExchangeHashes.remove(shortUuid)
+                            val matchingHashes = seenKeyExchangeHashes.keys.filter { com.example.bluemesh.utils.uuidsMatch(it, peerUuid) }
+                            for (k in matchingHashes) {
+                                seenKeyExchangeHashes.remove(k)
+                            }
+                        }
+                        Log.d("DataRepository", "Cleared session key for peer: $peerUuid (fully disconnected)")
+                    } else {
+                        Log.d("DataRepository", "Peer $peerUuid disconnected from one path, keeping session key (still connected via other path)")
                     }
-                    Log.d("DataRepository", "Cleared session key for peer: $peerUuid")
                 } catch (e: Exception) {
                     Log.e("DataRepository", "Error clearing session key on disconnect", e)
                 }
@@ -426,17 +430,10 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             // Always update address mapping — the peer may have changed addresses even if the key is the same
             bluetoothHandler.updatePeerUuid(senderUuid, device.address)
             if (oldAddress != null && oldAddress != newAddress && com.example.bluemesh.utils.uuidsMatch(activeChatUuid, senderUuid)) {
-                val now = System.currentTimeMillis()
-                val lastReconnect = peerReconnectTimestamps[senderUuid] ?: 0L
-                if (now - lastReconnect > 3000) {
-                    peerReconnectTimestamps[senderUuid] = now
-                    Log.d("DataRepository", "Peer $senderUuid changed address $oldAddress → $newAddress, refreshing connection")
-                    bluetoothHandler.disconnectClient(oldAddress)
-                    scope.launch {
-                        connectToPeerByUuid(senderUuid)
-                    }
-                } else {
-                    Log.d("DataRepository", "Peer $senderUuid address change $oldAddress → $newAddress within cooldown, deferring reconnect")
+                Log.d("DataRepository", "Peer $senderUuid changed address $oldAddress → $newAddress, refreshing connection")
+                bluetoothHandler.disconnectClient(oldAddress)
+                scope.launch {
+                    connectToPeerByUuid(senderUuid)
                 }
             }
             val keyHash = java.util.Arrays.hashCode(peerPublicKeyBytes)
@@ -453,6 +450,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                             myKeyPair?.let {
                                 bluetoothHandler.sendPublicKey(getUserUuid(), it.public.encoded, device)
                             }
+                            sendPendingMessages(senderUuid)
                         } catch (e: Exception) {
                             Log.e("DataRepository", "Error sending public key on deduped KEY_X", e)
                         }
