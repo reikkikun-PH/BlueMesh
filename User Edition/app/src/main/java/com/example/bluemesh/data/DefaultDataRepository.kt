@@ -1110,7 +1110,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             return
         }
         val device = peer?.device ?: bluetoothHandler.getDeviceByUuid(uuid)
-        if (device != null) {
+        if (device != null && !(peer?.isRelayed == true && peer.device == null)) {
             bluetoothHandler.connectToPeer(device)
         } else if (latestAddr != null) {
             bluetoothHandler.connectToPeerByAddress(latestAddr)

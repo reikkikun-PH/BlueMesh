@@ -47,6 +47,7 @@ class GattClientManager(
                         tracker.updateDeviceStatus(disconnectedAddress, ConnectionStatus.DISCONNECTED)
                     }
                     tracker.clientConnections.remove(disconnectedAddress)
+                    tracker.uuidToServerAddress.entries.removeAll { it.value == disconnectedAddress }
                     val peerUuid = tracker.getPeerList().find { it.address == disconnectedAddress }?.uuid
                         ?: tracker.getUuidByAddress(disconnectedAddress)
                     if (peerUuid != null) {
@@ -355,6 +356,7 @@ class GattClientManager(
                 conn.gatt.close()
             } catch (_: Exception) {}
         }
+        tracker.uuidToServerAddress.entries.removeAll { it.value == deviceAddress }
         if (tracker.clientConnections.isEmpty() && tracker.connectedClients.isEmpty()) {
             onDisconnected()
         }

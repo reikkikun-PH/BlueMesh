@@ -276,16 +276,16 @@ class BluetoothHandler(private val context: Context) {
                                 if (matches) {
                                     found = true
                                     val smoothedRssi = if (existing.rssi == -100) result.rssi else (0.25 * result.rssi + 0.75 * existing.rssi).toInt()
-                                    // Don't overwrite address with relay MAC when receiving relayed ads,
+                                    // Don't overwrite address or device with relay MAC when receiving relayed ads,
                                     // and keep isRelayed sticky once set to prevent flickering
                                     existing.copy(address = if (isRelayed) existing.address else device.address,
-                                        name = displayName, device = device, lastSeen = System.currentTimeMillis(),
+                                        name = displayName, device = if (isRelayed) existing.device else device, lastSeen = System.currentTimeMillis(),
                                         uuid = if (com.example.bluemesh.utils.normalizeUuid(existing.uuid).length > 16) existing.uuid else peerUuid,
                                         hasPasscode = hasPasscode, isOfficial = isOfficial, rssi = smoothedRssi,
                                         allowTracking = allowTracking, isRelayed = existing.isRelayed || isRelayed)
                                 } else existing
                             }
-                            val finalResult = if (found) updated else updated + BluetoothPeer(device.address, displayName, device, System.currentTimeMillis(), peerUuid, hasPasscode, isOfficial, result.rssi, allowTracking, isRelayed)
+                            val finalResult = if (found) updated else updated + BluetoothPeer(device.address, displayName, if (isRelayed) null else device, System.currentTimeMillis(), peerUuid, hasPasscode, isOfficial, result.rssi, allowTracking, isRelayed)
                             finalResult.sortedWith(compareBy({ it.name.lowercase() }, { it.address }))
                         }
                     }
