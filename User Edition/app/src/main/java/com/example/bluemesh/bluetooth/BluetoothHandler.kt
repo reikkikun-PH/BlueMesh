@@ -263,9 +263,6 @@ class BluetoothHandler(private val context: Context) {
                     val isOfficial = (passcodeByte and 0x02) != 0
                     val allowTracking = (passcodeByte and 0x04) != 0
                     val isRelayed = (passcodeByte and 0x10) != 0
-                    val isRelayBeacon = isRelayed && peerUuid == "0000000000000000"
-                    // Skip adding relay beacon to peer list (it's not a real user)
-                    if (isRelayBeacon) return
                     val nameOffset = if (manufacturerData.size >= 9) 9 else 8
                     val displayName = String(manufacturerData, nameOffset, manufacturerData.size - nameOffset, Charsets.UTF_8).trim()
                     if (displayName.isNotEmpty()) {
@@ -607,7 +604,7 @@ class BluetoothHandler(private val context: Context) {
         startPhysicalScan()
     }
 
-    fun clearAllTracker() = tracker.clearAll()
+    fun clearAllTracker(keepDisplayNames: Boolean = false) = tracker.clearAll(keepDisplayNames)
 
     fun stopGattServer() = gattServerManager.stopGattServer()
 

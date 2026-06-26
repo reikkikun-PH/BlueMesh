@@ -908,6 +908,39 @@ class DefaultDataRepository private constructor(private val context: Context) : 
         bluetoothHandler.clearDiscoveredPeers()
     }
 
+    override fun refreshMeshService() {
+        scope.launch(Dispatchers.IO) {
+            Log.d("DataRepository", "refreshMeshService: Full mesh restart triggered")
+
+            bluetoothHandler.stopAdvertising()
+            bluetoothHandler.disconnect()
+            bluetoothHandler.stopGattServer()
+
+            bluetoothHandler.clearDiscoveredPeers()
+
+            bluetoothHandler.clearAllTracker(keepDisplayNames = true)
+
+            pendingAcks.values.forEach { it.complete(false) }
+            pendingAcks.clear()
+            seenKeyExchangeHashes.clear()
+            pendingMeshMessageIds.clear()
+            perPeerSendQueues.values.forEach { while (it.tryReceive().isSuccess) { } }
+            perPeerSendQueues.clear()
+            sendQueueConsumers.values.forEach { it.cancel() }
+            sendQueueConsumers.clear()
+
+            delay(300)
+
+            bluetoothHandler.ensureGattServerRunning()
+            bluetoothHandler.startAdvertising(getDisplayName())
+            bluetoothHandler.stopScanning()
+            bluetoothHandler.startScanning()
+
+            requeuePendingMessages()
+
+            Log.d("DataRepository", "refreshMeshService: Mesh restart complete")
+        }
+    }
 
     override fun getDisplayName(): String = prefs.getString("display_name", "") ?: ""
 

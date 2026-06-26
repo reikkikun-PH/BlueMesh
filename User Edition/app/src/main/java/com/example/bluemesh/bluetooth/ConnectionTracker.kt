@@ -387,7 +387,7 @@ class ConnectionTracker(private val context: android.content.Context, private va
         _discoveredPeers.value = emptyList()
     }
 
-    fun clearAll() {
+    fun clearAll(keepDisplayNames: Boolean = false) {
         clientConnections.clear()
         connectedClients.clear()
         connectedServerDevice = null
@@ -406,6 +406,6 @@ class ConnectionTracker(private val context: android.content.Context, private va
         currentWriteDeferreds.clear()
         currentNotificationDeferreds.values.forEach { it.complete(false) }
         currentNotificationDeferreds.clear()
-        peerDisplayNames.clear()
+        if (!keepDisplayNames) peerDisplayNames.clear()
     }
 }

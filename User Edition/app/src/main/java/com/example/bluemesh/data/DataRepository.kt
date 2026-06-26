@@ -30,6 +30,7 @@ interface DataRepository {
     fun clearChatHistory()
     fun deleteOutgoingMessage(timestamp: Long)
     fun clearDiscoveredPeers()
+    fun refreshMeshService()
 
 
     fun getUserUuid(): String

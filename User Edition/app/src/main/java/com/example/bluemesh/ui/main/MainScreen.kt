@@ -477,7 +477,9 @@ checkedThumbColor = Color.White,
                                     isContactState = true
                                 },
                                 onClick = {
-                                    onItemClick(Chat(peer.uuid, peer.name))
+                                    if (peer.uuid != "0000000000000000") {
+                                        onItemClick(Chat(peer.uuid, peer.name))
+                                    }
                                 }
                             )
                         }

@@ -15,9 +15,10 @@ class MainScreenViewModel(private val dataRepository: DataRepository) : ViewMode
 
     fun startScanning(clearList: Boolean = false) {
         if (clearList) {
-            dataRepository.clearDiscoveredPeers()
+            dataRepository.refreshMeshService()
+        } else {
+            dataRepository.startScan()
         }
-        dataRepository.startScan()
     }
 
 
