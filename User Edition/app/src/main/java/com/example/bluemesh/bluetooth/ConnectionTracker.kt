@@ -286,8 +286,29 @@ class ConnectionTracker(private val context: android.content.Context, private va
 
     fun getCachedAddressForUuid(uuid: String): String? {
         val peer = _discoveredPeers.value.find { uuidsMatch(it.uuid, uuid) }
-        if (peer != null && peer.address.isNotEmpty()) return peer.address
+        if (peer != null && peer.address.isNotEmpty()) {
+            if (peer.device == null && peer.isRelayed) {
+                val serverAddr = uuidToServerAddress.entries.firstOrNull { uuidsMatch(it.key, uuid) }?.value
+                if (serverAddr != null && serverAddr != peer.address) return serverAddr
+            }
+            return peer.address
+        }
         return uuidToServerAddress.entries.firstOrNull { uuidsMatch(it.key, uuid) }?.value
+    }
+
+    fun refreshPeerFromServerAddress(uuid: String) {
+        val serverAddr = uuidToServerAddress.entries.firstOrNull { uuidsMatch(it.key, uuid) }?.value
+        if (serverAddr != null) {
+            _discoveredPeers.update { current ->
+                current.map { peer ->
+                    if (uuidsMatch(peer.uuid, uuid) && peer.isRelayed && peer.device == null && peer.address != serverAddr) {
+                        Log.d(Constants.TAG, "refreshPeerFromServerAddress: updating $uuid address ${peer.address} -> $serverAddr")
+                        val connectedDevice = getConnectedDeviceByAddress(serverAddr)
+                        peer.copy(address = serverAddr, device = connectedDevice ?: peer.device, isRelayed = connectedDevice != null)
+                    } else peer
+                }
+            }
+        }
     }
 
     fun getConnectedDeviceByAddress(address: String): BluetoothDevice? {

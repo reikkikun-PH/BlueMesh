@@ -1103,6 +1103,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
     override fun connectToPeerByUuid(uuid: String) {
         val latestAddr = bluetoothHandler.getCachedAddressForUuid(uuid)
         val peer = bluetoothHandler.discoveredPeers.value.find { com.example.bluemesh.utils.uuidsMatch(it.uuid, uuid) }
+        val isRelayOnly = peer?.isRelayed == true && peer.device == null
         if (peer != null && latestAddr != null && peer.address != latestAddr) {
             Log.d("DataRepository", "Peer $uuid address changed ${peer.address} -> $latestAddr, using latest")
             bluetoothHandler.connectToPeerByAddress(latestAddr)
@@ -1110,9 +1111,9 @@ class DefaultDataRepository private constructor(private val context: Context) : 
             return
         }
         val device = peer?.device ?: bluetoothHandler.getDeviceByUuid(uuid)
-        if (device != null && !(peer?.isRelayed == true && peer.device == null)) {
+        if (device != null && !isRelayOnly) {
             bluetoothHandler.connectToPeer(device)
-        } else if (latestAddr != null) {
+        } else if (latestAddr != null && !isRelayOnly) {
             bluetoothHandler.connectToPeerByAddress(latestAddr)
             bluetoothHandler.startScanning()
         } else {
@@ -1370,6 +1371,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                         var acked = false
                         var currentRetry = 0
                         while (!sent && currentRetry < maxGattRetries) {
+                            bluetoothHandler.refreshPeerFromServerAddress(request.activeChatUuid)
                             if (bluetoothHandler.isPeerReady(request.activeChatUuid)) {
                                 var innerRetryCount = 0
                                 val ackDeferred = CompletableDeferred<Boolean>()
@@ -1403,6 +1405,7 @@ class DefaultDataRepository private constructor(private val context: Context) : 
                                     )
                                 }
                             } else {
+                                bluetoothHandler.refreshPeerFromServerAddress(request.activeChatUuid)
                                 Log.d("DataRepository", "Peer ${request.activeChatUuid} not ready, attempting reconnect and retrying (retry=$currentRetry).")
                                 pendingMeshMessageIds[request.messageId] = request.timestamp
                                 if (isPlaintext && currentRetry % 2 == 0) {

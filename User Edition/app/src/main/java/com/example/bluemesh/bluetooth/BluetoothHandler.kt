@@ -634,6 +634,8 @@ class BluetoothHandler(private val context: Context) {
 
     fun updatePeerUuid(fullUuid: String, deviceAddress: String) = tracker.updatePeerUuid(fullUuid, deviceAddress)
 
+    fun refreshPeerFromServerAddress(uuid: String) = tracker.refreshPeerFromServerAddress(uuid)
+
     fun setPeerNameResolver(resolver: (String) -> String) {
         tracker.onResolvePeerName = resolver
     }
